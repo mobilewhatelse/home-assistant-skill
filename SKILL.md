@@ -733,3 +733,306 @@ HA auto-generates entity IDs from device/entity names:
 - Prefix from device name, suffix from entity type
 
 Always verify entity IDs in **Developer Tools → States** rather than assuming from the name.
+
+For Tuya combo devices (socket + temperature sensor), the temperature entity often uses a mix of languages:
+- Some devices: `sensor.device_name_temperature` (English)
+- Others: `sensor.device_name_temperatur` (German)
+
+Click on the entity in **Settings → Devices → [Device] → Temperatur** to see the exact entity ID.
+
+---
+
+## Multi-File Include with Packages
+
+When a single YAML file defines multiple top-level keys (`input_select`, `input_number`, `automation`, `template`, etc.), you **cannot** use `!include` directly at the top level — it needs a key. Use `packages` instead:
+
+```yaml
+# configuration.yaml
+homeassistant:
+  packages:
+    my_feature: !include my_feature.yaml
+```
+
+The included file can contain any combination of top-level keys:
+
+```yaml
+# my_feature.yaml
+input_select:
+  my_mode: ...
+
+input_number:
+  my_threshold: ...
+
+automation:
+  - id: my_automation
+    ...
+
+template:
+  - sensor:
+      ...
+```
+
+**Never** write `!include file.yaml` as a standalone line — YAML requires a key before every value.
+
+---
+
+## Multi-Room Thermostat Control Pattern
+
+Complete pattern for controlling multiple heaters (Tuya smart plugs with built-in temperature sensors) via 4 operating modes.
+
+### Modes
+
+| Mode | Behavior |
+|------|----------|
+| `Aus` | All heaters off immediately |
+| `Winter` | Frost protection — hold constant temp (e.g. 8°C), ±0.3°C hysteresis |
+| `Urlaub` | Day/Night schedule — higher temp by day, lower at night, configurable hours |
+| `Test` | Manual control of each heater individually |
+
+### Input Helpers
+
+```yaml
+input_select:
+  heizung_modus:
+    name: "Heizungsmodus"
+    options: ["Aus", "Winter", "Urlaub", "Test"]
+    icon: mdi:fire
+
+input_number:
+  winter_temperatur:
+    name: "Winter Zieltemperatur"
+    min: 5
+    max: 25
+    step: 0.5
+    unit_of_measurement: "°C"
+    initial: 8
+
+  urlaub_temp_tag:
+    name: "Urlaub Tagestemperatur"
+    min: 15
+    max: 25
+    step: 0.5
+    unit_of_measurement: "°C"
+    initial: 22
+
+  urlaub_temp_nacht:
+    name: "Urlaub Nachttemperatur"
+    min: 10
+    max: 20
+    step: 0.5
+    unit_of_measurement: "°C"
+    initial: 18
+
+  urlaub_start_tag:
+    name: "Urlaub Tagesstart (Stunde)"
+    min: 0
+    max: 23
+    step: 1
+    unit_of_measurement: "h"
+    initial: 6
+
+  urlaub_start_nacht:
+    name: "Urlaub Nachtstart (Stunde)"
+    min: 0
+    max: 23
+    step: 1
+    unit_of_measurement: "h"
+    initial: 23
+
+input_boolean:
+  test_room1:
+    name: "TEST: Room 1"
+    icon: mdi:toggle-switch
+```
+
+### Thermostat Automation with Hysteresis
+
+Use `condition: template` instead of `numeric_state` for dynamic thresholds in action `if` blocks — `above`/`below` do NOT accept templates there:
+
+```yaml
+- id: heizung_winter_room1
+  alias: "Heizung - WINTER Room 1"
+  trigger:
+    - platform: state
+      entity_id: sensor.room1_temperature
+    - platform: time_pattern
+      minutes: "/10"
+  condition:
+    - condition: state
+      entity_id: input_select.heizung_modus
+      state: "Winter"
+  action:
+    - if:
+        - condition: template
+          value_template: >
+            {{ states('sensor.room1_temperature') | float(99) <
+               (states('input_number.winter_temperatur') | float(8)) - 0.3 }}
+      then:
+        - service: homeassistant.turn_on
+          target:
+            entity_id: switch.room1_heater
+      else:
+        - if:
+            - condition: template
+              value_template: >
+                {{ states('sensor.room1_temperature') | float(0) >
+                   (states('input_number.winter_temperatur') | float(8)) + 0.3 }}
+          then:
+            - service: homeassistant.turn_off
+              target:
+                entity_id: switch.room1_heater
+```
+
+**Hysteresis values:**
+- Winter: ±0.3°C → 0.6°C total band (prevents rapid switching at low temps)
+- Holiday: ±0.5°C → 1.0°C total band
+
+### Day/Night Time Condition (handles midnight wraparound)
+
+```yaml
+# Daytime condition (e.g. 06:00–23:00)
+- condition: template
+  value_template: >
+    {% set start = states('input_number.urlaub_start_tag') | int(6) %}
+    {% set end = states('input_number.urlaub_start_nacht') | int(23) %}
+    {{ now().hour >= start and now().hour < end }}
+
+# Nighttime condition (handles wraparound: e.g. 23:00–06:00)
+- condition: template
+  value_template: >
+    {% set start = states('input_number.urlaub_start_nacht') | int(23) %}
+    {% set end = states('input_number.urlaub_start_tag') | int(6) %}
+    {% set hour = now().hour %}
+    {% if start > end %}
+      {{ hour >= start or hour < end }}
+    {% else %}
+      {{ hour >= start and hour < end }}
+    {% endif %}
+```
+
+### Template Sensors for Dashboard
+
+```yaml
+template:
+  - sensor:
+      - name: "Heizung Status"
+        unique_id: heizung_status
+        state: "{{ states('input_select.heizung_modus') }}"
+
+      - name: "Aktive Heizungen"
+        unique_id: aktive_heizungen
+        state: >
+          {% set on_count = [
+            states('switch.room1_heater'),
+            states('switch.room2_heater')
+          ] | select('equalto', 'on') | list | length %}
+          {{ on_count }}
+
+      - name: "Durchschnittstemperatur"
+        unique_id: durchschnitts_temperatur
+        unit_of_measurement: "°C"
+        device_class: temperature
+        state: >
+          {% set temps = [
+            states('sensor.room1_temperature') | float(0),
+            states('sensor.room2_temperature') | float(0)
+          ] | select('>', 0) | list %}
+          {{ (temps | sum / temps | length) | round(1) if temps else 'N/A' }}
+```
+
+---
+
+## Dashboard Deployment via Raw Editor
+
+Lovelace dashboards are NOT included in `configuration.yaml`. Upload them via the UI:
+
+1. **Settings → Dashboards → + Add Dashboard** → choose type (Masonry)
+2. Navigate to the new dashboard in the sidebar
+3. Top right **⋮ → Edit Dashboard → ⋮ → Raw configuration editor**
+4. Select all (`Ctrl+A`) → delete → paste YAML → Save
+
+**Important:** Always select-all and delete first. Pasting without clearing causes `duplicated mapping key` errors (two `title:` keys).
+
+### Tile Cards (recommended over button/entities for switches)
+
+`type: tile` shows entity name, current state/value, and toggles for switches — more compact than `type: button`:
+
+```yaml
+- type: tile
+  entity: switch.room1_heater
+  name: "Room 1"
+  icon: mdi:radiator
+
+- type: tile
+  entity: sensor.room1_temperature
+  name: "Room 1 Temp"
+```
+
+### Valid Lovelace View Types
+
+```yaml
+views:
+  - path: main
+    title: "My View"
+    # type: masonry   ← default, omit or use explicitly
+    # type: panel
+    # type: sidebar
+    # type: sections
+    cards: [...]
+```
+
+`type: vertical` does NOT exist — omit `type` to get the default masonry layout.
+
+---
+
+## New Common Pitfalls
+
+### `description:` not valid for input helpers
+`input_boolean`, `input_select`, and `input_number` do not accept a `description:` field — HA will warn and ignore the entity. Remove it.
+
+### `initial_value:` vs `initial:` for input_number
+The correct key is `initial:`, not `initial_value:`.
+
+```yaml
+# Wrong
+my_number:
+  initial_value: 8
+
+# Correct
+my_number:
+  initial: 8
+```
+
+### Templates not allowed in `above:`/`below:` inside action `if` blocks
+`numeric_state` conditions inside action `if`/`then`/`else` blocks do not support Jinja2 templates for `above` and `below`. Use `condition: template` instead:
+
+```yaml
+# Wrong — causes "expected float" error
+- if:
+    - condition: numeric_state
+      entity_id: sensor.temp
+      below: "{{ states('input_number.target') | float - 0.3 }}"
+
+# Correct
+- if:
+    - condition: template
+      value_template: >
+        {{ states('sensor.temp') | float(99) <
+           states('input_number.target') | float - 0.3 }}
+```
+
+### `!include` as standalone line
+`!include` must be the value of a key — never a standalone line:
+
+```yaml
+# Wrong — causes "multiline key may not be an implicit key" error
+!include my_file.yaml
+
+# Correct
+my_section: !include my_file.yaml
+
+# For multi-key files, use packages:
+homeassistant:
+  packages:
+    my_feature: !include my_feature.yaml
+```
