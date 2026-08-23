@@ -619,14 +619,152 @@ The `.storage` key matches the `id`: `lovelace.my_dashboard`.
 
 ## .storage Files
 
-HA persists integration config in `.storage/core.config_entries`. Each integration has a `data` block with connection parameters. To update a connection (e.g. IP change):
+HA persists integration config in `.storage/core.config_entries`. Each integration has a `data` block with connection parameters (host, port, credentials).
+
+**Do not try to change integration config by editing this file.** HA holds config entries in memory and writes them back to disk on its own schedule. An edit made while HA runs gets silently reverted — often within minutes, with no restart involved. An integration stuck in `setup_retry` is retried continuously and each retry can trigger a store write, so a failing integration is exactly the case where file edits are least likely to survive.
+
+Editing while HA is stopped does work, but only if you can guarantee HA stays down for the edit and you have a way to start it again. On a remote/headless box that is usually not worth it.
+
+Use the REST API instead (see below). It changes HA's in-memory state, which is the authoritative copy, and HA persists it itself.
+
+Lovelace dashboards are the exception worth knowing: `.storage/lovelace.<id>` files can be created or edited directly, because HA reads them on demand rather than holding them in a write-back cache. After editing, reload via **Developer Tools → YAML → Reload Lovelace dashboards** or restart. Editing the dashboard in the UI afterwards will overwrite your file.
+
+---
+
+## REST API
+
+Far more reliable than poking at files, and it removes the need to ask the user to click through the UI. Create a token under **Profile → Long-Lived Access Tokens**.
 
 ```bash
-sed -i 's/"host":"192.168.1.100"/"host":"192.168.1.101"/' \
-  /config/.storage/core.config_entries
+TOKEN="eyJhbGci..."
+HA="http://homeassistant.local:8123"
+AUTH=(-H "Authorization: Bearer $TOKEN")
 ```
 
-Then restart HA. Never edit `.storage` files while HA is running (risk of corruption on save).
+### Read state — verify instead of assuming
+
+```bash
+curl -s "${AUTH[@]}" "$HA/api/states/sensor.my_sensor"
+curl -s "${AUTH[@]}" "$HA/api/states"          # everything
+```
+
+Use this to confirm an entity actually exists and holds a sane value before writing automations against it. Typos in entity IDs are the single most common cause of automations that "run but do nothing".
+
+### Call services
+
+```bash
+curl -s -X POST "${AUTH[@]}" -H "Content-Type: application/json" \
+  -d '{"entity_id":"switch.my_switch"}' "$HA/api/services/switch/turn_on"
+```
+
+### Inspect integrations
+
+```bash
+curl -s "${AUTH[@]}" "$HA/api/config/config_entries/entry?domain=my_integration"
+```
+
+Returns one object per entry. The fields that decide what you can change:
+
+| Field | Meaning |
+|---|---|
+| `entry_id` | Handle for options/reconfigure flows |
+| `state` | `loaded`, `setup_retry`, `setup_error`, … |
+| `reason` | Why setup failed |
+| `supports_options` | An options flow exists |
+| `supports_reconfigure` | A reconfigure flow exists (can change connection settings) |
+
+### Drive a config or options flow
+
+Options flows are multi-step. Start one with the `entry_id` as handler, then POST each step's answers to the returned `flow_id`:
+
+```bash
+# Start — returns flow_id and the first step's schema
+curl -s -X POST "${AUTH[@]}" -H "Content-Type: application/json" \
+  -d '{"handler":"01ABCDEF..."}' "$HA/api/config/config_entries/options/flow"
+
+# Answer a step
+curl -s -X POST "${AUTH[@]}" -H "Content-Type: application/json" \
+  -d '{"action":"host"}' "$HA/api/config/config_entries/options/flow/$FLOW_ID"
+
+# Abandon an unfinished flow
+curl -s -X DELETE "${AUTH[@]}" \
+  "$HA/api/config/config_entries/options/flow/$FLOW_ID"
+```
+
+The response `type` tells you where you are: `form` (another step, schema included), `create_entry` (done), or `abort` (done, with a `reason`). The returned `data_schema` shows the exact field names to send — read it rather than guessing.
+
+### Restart and wait
+
+```bash
+curl -s -X POST "${AUTH[@]}" -H "Content-Type: application/json" \
+  -d '{}' "$HA/api/services/homeassistant/restart"
+```
+
+Then poll `$HA/api/config` until `state` is `RUNNING`. The sequence is connection-refused → `NOT_RUNNING` → `STARTING` → `RUNNING`, typically 60–120 s. Do not test anything before `RUNNING` — entities are still materializing and everything looks `unavailable`.
+
+---
+
+## Patching a Custom Component
+
+Sometimes an integration simply cannot do what you need. A concrete and common case: a device gets a new DHCP IP, but the integration offers no way to change the host — `supports_reconfigure` is `false` and the options flow only covers unrelated settings.
+
+Check the alternatives first, because patching is a maintenance burden:
+
+- Give the device a static IP or a DHCP reservation on the router. This is the real fix — do it if the router allows it.
+- Use a hostname instead of an IP in the integration config, if the device registers one via mDNS/DNS.
+- Delete and re-add the integration. Check the `config_flow.py` first: if `unique_id` is derived from the host (`async_set_unique_id(host.replace(".", "_"))`), re-adding under a new IP produces a **new** unique_id, therefore new entity IDs, breaking every automation, template and dashboard that referenced the old ones. That usually rules it out.
+
+If you do patch, adding a step to the options flow is a small, contained change:
+
+```python
+async def async_step_host(self, user_input=None) -> FlowResult:
+    """Change the device host/IP (e.g. after a DHCP change)."""
+    errors = {}
+    current_host = self._config_entry.data.get(CONF_HOST, "")
+
+    if user_input is not None:
+        new_host = user_input.get(CONF_HOST, "").strip()
+        if not new_host:
+            errors[CONF_HOST] = "empty_host"
+        elif new_host == current_host:
+            return self.async_abort(reason="host_unchanged")
+        else:
+            new_data = dict(self._config_entry.data)
+            new_data[CONF_HOST] = new_host
+            # Writes entry.data AND persists it — unique_id untouched,
+            # so all entity IDs survive.
+            self.hass.config_entries.async_update_entry(
+                self._config_entry, data=new_data, title=new_host,
+            )
+            self.hass.config_entries.async_schedule_reload(
+                self._config_entry.entry_id
+            )
+            return self.async_abort(
+                reason="host_updated",
+                description_placeholders={"host": new_host},
+            )
+
+    return self.async_show_form(
+        step_id="host",
+        data_schema=vol.Schema({
+            vol.Required(CONF_HOST, default=current_host): str
+        }),
+        errors=errors,
+    )
+```
+
+Key points:
+
+- **`async_update_entry(data=...)` is the right tool.** It updates the in-memory entry and persists it. This is what file editing was trying and failing to do.
+- **Leave `unique_id` alone.** Entity IDs are derived from it. Changing it orphans every entity.
+- **`data` vs `options`.** Connection settings live in `entry.data`; user preferences live in `entry.options`. `async_create_entry()` in an options flow writes `options`, so a host change needs `async_update_entry(data=...)` instead.
+- Wire the step into `async_step_init` and add it to the action selector.
+- Add `translations/*.json` entries for the new step, the selector option, and any `abort`/`error` reasons. A missing translation key surfaces as a raw string in the UI, not an error, so it is easy to miss.
+
+Then:
+
+- **Python changes in a custom component need a full HA restart.** Reloading the config entry re-runs setup with the already-imported module; it does not re-import your edited file.
+- **HACS updates overwrite custom component files.** Keep patched files in your own repo alongside a note on how to redeploy, or the patch will vanish at the next update with no warning.
 
 ---
 
@@ -1036,3 +1174,64 @@ homeassistant:
   packages:
     my_feature: !include my_feature.yaml
 ```
+
+### "Entities unavailable" is usually an integration problem, not an entity problem
+
+When a device's entities all read `unavailable`, do not start by inspecting entities or dashboards. Check the integration entry first:
+
+```bash
+curl -s "${AUTH[@]}" "$HA/api/config/config_entries/entry?domain=my_integration" \
+  | python -c "import json,sys
+for e in json.load(sys.stdin):
+    print(e['title'], e['state'], e['reason'])"
+```
+
+A `state` of `setup_retry` with a `reason` points straight at the cause — wrong IP, wrong credentials, device offline. A cryptic `reason` (e.g. `'parsed'`, a raw `KeyError` from the integration) still tells you setup is failing rather than the entities being misconfigured.
+
+### Keep a feature's helpers and automations in one package file
+
+When adding a self-contained feature, resist appending its helpers to whatever existing `input_boolean:`/`input_number:` include happens to be there. Give it a package:
+
+```yaml
+# configuration.yaml
+homeassistant:
+  packages:
+    poolpump: !include poolpump.yaml
+```
+
+```yaml
+# poolpump.yaml — helpers and automations together
+input_boolean:
+  poolpump_solar_control:
+    name: Pool Pump Solar Control
+    initial: true
+
+automation:
+  - alias: Pool Pump - Solar control on at startup
+    triggers:
+      - trigger: homeassistant
+        event: start
+    actions:
+      - action: input_boolean.turn_on
+        target:
+          entity_id: input_boolean.poolpump_solar_control
+```
+
+The feature becomes one file to read, move, or delete, and unrelated features stop accumulating each other's helpers. Note that `automation:` inside a package coexists with `automation: !include automations.yaml` — packages merge rather than collide, so UI-created automations keep working.
+
+### Retrofitting a manual override onto existing automations
+
+To make existing automations skippable without rewriting them, add a single state condition at the top of each:
+
+```yaml
+conditions:
+  - condition: state
+    entity_id: input_boolean.my_feature_auto_control
+    state: 'on'
+  # ... existing conditions unchanged
+```
+
+Two things this needs to be complete:
+
+- **Set the boolean explicitly at startup** if one state is meant to be the default after a restart. `initial:` covers helper creation, but being explicit in the startup automation makes the intent visible and survives someone later removing `initial:`.
+- **Add a "control re-enabled" automation.** Turning the boolean back on does not re-fire the original `numeric_state` triggers, so the device keeps whatever state manual mode left it in until the next threshold crossing. Trigger on the boolean going `on` and apply the correct state immediately — the same reason startup checks are needed.
