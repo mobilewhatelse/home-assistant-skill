@@ -1175,6 +1175,37 @@ homeassistant:
     my_feature: !include my_feature.yaml
 ```
 
+### `footer:` on an entities card breaks it in the sections layout
+
+An `entities` card with a `footer:` renders a red **Configuration error** box below the entity rows when used in a `type: sections` view:
+
+```yaml
+# Broken in a sections view
+- type: entities
+  title: Solar Control
+  entities:
+    - entity: input_boolean.solar_control
+  footer:
+    type: markdown
+    content: "**On**: automatic. **Off**: manual."
+```
+
+Use a separate `markdown` card in the same grid section instead:
+
+```yaml
+- type: entities
+  title: Solar Control
+  entities:
+    - entity: input_boolean.solar_control
+- type: markdown
+  content: |
+    **On**: automatic.
+
+    **Off**: manual.
+```
+
+The failure is easy to misdiagnose, because the entity rows above the error render normally — it looks like a broken entity rather than a broken card option.
+
 ### "Entities unavailable" is usually an integration problem, not an entity problem
 
 When a device's entities all read `unavailable`, do not start by inspecting entities or dashboards. Check the integration entry first:
