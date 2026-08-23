@@ -9,7 +9,12 @@ A Claude Code skill for developing Home Assistant automations, dashboards, and i
 - Startup check and periodic check patterns
 - `wait_template` for robust boot behavior
 - Dashboard YAML (Lovelace sections layout)
-- `.storage` file management
+- Multi-room thermostat control with hysteresis
+- `.storage` files — and why editing them is the wrong tool for integration config
+- REST API: reading state, driving config/options flows, restarting and waiting
+- Patching a HACS custom component (e.g. adding a host field to an options flow)
+  without breaking entity IDs
+- Packages for self-contained features
 - AI notification integration (`ai_task.generate_data`)
 - Common pitfalls and their fixes
 
