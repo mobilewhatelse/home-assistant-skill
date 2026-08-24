@@ -12,6 +12,9 @@ A Claude Code skill for developing Home Assistant automations, dashboards, and i
 - Multi-room thermostat control with hysteresis
 - `.storage` files — and why editing them is the wrong tool for integration config
 - REST API: reading state, driving config/options flows, restarting and waiting
+- WebSocket API: creating dashboards without file access, managing add-ons via
+  the Supervisor, reading add-on logs
+- Working against a Nabu Casa remote URL when off the LAN
 - Patching a HACS custom component (e.g. adding a host field to an options flow)
   without breaking entity IDs
 - Packages for self-contained features

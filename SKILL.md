@@ -629,6 +629,8 @@ Use the REST API instead (see below). It changes HA's in-memory state, which is 
 
 Lovelace dashboards are the exception worth knowing: `.storage/lovelace.<id>` files can be created or edited directly, because HA reads them on demand rather than holding them in a write-back cache. After editing, reload via **Developer Tools → YAML → Reload Lovelace dashboards** or restart. Editing the dashboard in the UI afterwards will overwrite your file.
 
+Even for dashboards, though, prefer the WebSocket API (`lovelace/dashboards/create` + `lovelace/config/save`, see below). It needs no file access at all, takes effect immediately without a reload, and works when you are off the LAN.
+
 ---
 
 ## REST API
@@ -701,6 +703,105 @@ curl -s -X POST "${AUTH[@]}" -H "Content-Type: application/json" \
 ```
 
 Then poll `$HA/api/config` until `state` is `RUNNING`. The sequence is connection-refused → `NOT_RUNNING` → `STARTING` → `RUNNING`, typically 60–120 s. Do not test anything before `RUNNING` — entities are still materializing and everything looks `unavailable`.
+
+### Reaching HA from outside the LAN
+
+The same long-lived token works against the Nabu Casa remote URL
+(`https://<id>.ui.nabu.casa`), which is the only option when the machine you
+are working from is not on the home network — Samba, the local IP, and any
+add-on web UI are all unreachable then.
+
+Budget for latency: the first call over the relay can take 15 s or more.
+Timeouts that are fine locally (10–20 s) will fail, and a failure looks
+identical to the service being down. Use 60–120 s.
+
+If local access suddenly stops working entirely — ping succeeds but every
+port is closed, Samba is gone — check whether you are still on the same
+network before diagnosing the HA host.
+
+---
+
+## WebSocket API
+
+Some things the REST API cannot do at all. Connect to
+`wss://<host>/api/websocket`, expect `auth_required`, send
+`{"type": "auth", "access_token": ...}`, expect `auth_ok`, then send
+commands with a monotonically increasing `id` and match responses by that id.
+
+**Use one persistent connection for a sequence of calls.** Opening a fresh
+connection per call is measurably unreliable over a remote relay — calls fail
+sporadically with connection errors that look like permission problems.
+
+### Creating dashboards without file access
+
+This is the remote-friendly alternative to writing `.storage/lovelace.<id>`:
+
+```json
+{"type": "lovelace/dashboards/list"}
+{"type": "lovelace/dashboards/create", "url_path": "my-dash", "title": "My Dash",
+ "icon": "mdi:gauge", "show_in_sidebar": true, "require_admin": false}
+{"type": "lovelace/config/save", "url_path": "my-dash", "config": {"views": [...]}}
+{"type": "lovelace/config", "url_path": "my-dash"}
+```
+
+`lovelace/config` also reads a dashboard back — useful for exporting a
+UI-built dashboard into version control.
+
+Beware the default "Overview" dashboard: `lovelace/config` returns
+`config_not_found` for it. That is not an error — it means the dashboard is
+in auto-generated (strategy) mode. Writing a config to it is equivalent to
+"take control" in the UI and **permanently ends the auto-generation**, so
+every future device and area has to be added by hand. Never do this to add a
+card; create a separate dashboard instead.
+
+### Supervisor and add-ons
+
+Add-on management goes through `supervisor/api`:
+
+```json
+{"type": "supervisor/api", "endpoint": "/supervisor/info", "method": "get"}
+{"type": "supervisor/api", "endpoint": "/store/repositories", "method": "post",
+ "data": {"repository": "https://github.com/owner/repo"}}
+{"type": "supervisor/api", "endpoint": "/store/addons/<slug>/install", "method": "post"}
+{"type": "supervisor/api", "endpoint": "/addons/<slug>/start", "method": "post"}
+{"type": "supervisor/api", "endpoint": "/addons/<slug>/options", "method": "post",
+ "data": {"boot": "manual"}}
+```
+
+Useful read endpoints: `/addons` (installed, as `{"addons": [...]}`),
+`/store/addons` (everything available), `/addons/<slug>/info`,
+`/store/addons/<slug>` (has `available`, `arch`, `installed`, `version`).
+
+Three traps, each of which cost real time:
+
+- **Never send a `timeout` field.** With it, every call fails as
+  `{"code": "unknown_error", "message": ""}` regardless of the endpoint —
+  which reads exactly like a permission problem and sends you off
+  investigating admin rights and allowlists. Without it, the same calls work.
+- **Long operations report failure and succeed anyway.** An add-on install
+  downloads a container image and outlives the response window, returning the
+  same empty `unknown_error`. The install completes regardless. Always
+  re-query `/addons` or `/store/addons/<slug>` afterwards instead of trusting
+  the error — otherwise you will report a failure that did not happen, or
+  leave something installed without noticing.
+- **Match add-on slugs exactly.** A substring match on `"uni"` hits
+  `a0d7b954_unifi` before `663b81ce_uni_meter`, and combined with the
+  previous trap you can install the wrong add-on and be told it failed.
+
+### Add-on logs
+
+Logs are plain text, so `supervisor/api` cannot return them. The REST proxy
+does, and this specific path works with a long-lived token even though most
+`/api/hassio/*` paths return 401:
+
+```bash
+curl -s -H "Authorization: Bearer $TOKEN" -H "Accept: text/plain" \
+  "$HA/api/hassio/addons/<slug>/logs" | sed 's/\x1b\[[0-9;]*m//g'
+```
+
+The `sed` strips ANSI colour codes. For an add-on that talks to an external
+service, several minutes of log with no connection errors is decent evidence
+that its credentials and URLs are right.
 
 ---
 
@@ -1174,6 +1275,26 @@ homeassistant:
   packages:
     my_feature: !include my_feature.yaml
 ```
+
+### "Add-ons" are called "Apps" in recent versions
+
+The UI section is **Settings → Apps**, and on disk `/addon_configs` shows up
+as `app_configs`. Instructions written against the old naming send people
+looking for a menu entry that no longer exists. Ask what the user actually
+sees rather than insisting on the documented name — upstream add-on
+documentation still says "add-on" throughout.
+
+### Add-on config files that the add-on does not create
+
+Several add-ons expect a config file in `/addon_configs/<slug>/` that they
+will not create themselves, and the directory only appears once the add-on
+has started at least once. Starting it once to have Supervisor create the
+directory with correct ownership is more reliable than creating it by hand.
+
+Writing that file needs Samba (LAN only) or the **File editor** add-on — and
+File editor ships with `enforce_basepath: true`, which confines it to
+`/config`. Turning that off in the add-on's configuration and restarting it
+exposes the whole filesystem; turn it back on afterwards.
 
 ### `footer:` on an entities card breaks it in the sections layout
 
