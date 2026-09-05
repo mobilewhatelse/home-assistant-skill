@@ -4,21 +4,39 @@ A Claude Code skill for developing Home Assistant automations, dashboards, and i
 
 ## What's in this skill
 
-- Solar-based device control patterns (turn on/off based on feed-in power)
+**Automations and patterns**
+- Solar-based device control (turn on/off based on feed-in power)
 - Low/Mid/High mode switching for adjustable devices
-- Startup check and periodic check patterns
-- `wait_template` for robust boot behavior
-- Dashboard YAML (Lovelace sections layout)
+- Startup check and periodic check patterns, `wait_template` for robust boot
 - Multi-room thermostat control with hysteresis
-- `.storage` files — and why editing them is the wrong tool for integration config
-- REST API: reading state, driving config/options flows, restarting and waiting
-- WebSocket API: creating dashboards without file access, managing add-ons via
-  the Supervisor, reading add-on logs
-- Working against a Nabu Casa remote URL when off the LAN
-- Patching a HACS custom component (e.g. adding a host field to an options flow)
-  without breaking entity IDs
+- Retrofitting a manual-override switch onto existing automations
 - Packages for self-contained features
+
+**Energy metering**
+- Battery behind the meter: why computed house consumption breaks once a
+  battery is added, and how to correct it — including preparing the correction
+  before the hardware arrives
+- Energy dashboard configuration over WebSocket, incl. batteries and
+  per-device breakdown
+- Creating helpers (Riemann sum, template, utility meter) over the API
+- Comparing your figures against the manufacturer's app without chasing
+  phantom errors
+
+**Driving HA from outside**
+- REST API: reading state, driving config/options flows, restarting and waiting
+- WebSocket API: dashboards without file access, Supervisor and add-on
+  management, add-on logs, `system_log/list`
+- Working against a Nabu Casa remote URL when off the LAN
+
+**Integrations and dashboards**
+- Patching a HACS custom component (e.g. adding a host field to an options
+  flow) without breaking entity IDs — and re-applying it after an update
+- Dashboard YAML (Lovelace sections layout)
+- `.storage` files — and why editing them is the wrong tool for integration config
 - AI notification integration (`ai_task.generate_data`)
+
+**Diagnostics**
+- A `loaded` config entry with dead entities: reading errnos, reloading entries
 - Common pitfalls and their fixes
 
 ## Usage
