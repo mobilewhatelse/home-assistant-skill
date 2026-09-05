@@ -803,6 +803,167 @@ The `sed` strips ANSI colour codes. For an add-on that talks to an external
 service, several minutes of log with no connection errors is decent evidence
 that its credentials and URLs are right.
 
+### Reading the error log
+
+`GET /api/error_log` is gone in recent versions (404). Use the WebSocket
+command `system_log/list` instead — it returns structured entries with
+`level`, `name`, `message`, `count` and `exception`, which is more useful than
+raw log text anyway:
+
+```json
+{"type": "system_log/list"}
+```
+
+The `count` field is the killer feature: an entry seen 6216 times is a loop,
+one seen twice is a blip. Filter by the integration's `name`
+(`custom_components.<domain>`) to isolate one device.
+
+---
+
+## Energy Dashboard
+
+Configured over WebSocket, not YAML:
+
+```json
+{"type": "energy/get_prefs"}
+{"type": "energy/save_prefs", "energy_sources": [...], "device_consumption": [...]}
+```
+
+`save_prefs` takes the fields at the top level of the message, not nested — read
+the current prefs, modify, and send the whole structure back.
+
+Structure:
+
+```json
+{
+  "energy_sources": [
+    {"type": "solar",  "stat_energy_from": "sensor.pv_production"},
+    {"type": "grid",
+     "flow_from": [{"stat_energy_from": "sensor.grid_import"}],
+     "flow_to":   [{"stat_energy_to":   "sensor.grid_export"}]},
+    {"type": "battery",
+     "stat_energy_from": "sensor.battery_out",
+     "stat_energy_to":   "sensor.battery_in"}
+  ],
+  "device_consumption": [
+    {"stat_consumption": "sensor.ev_charger_total", "name": "EV charger"}
+  ]
+}
+```
+
+Every entity here must be **energy** (kWh/Wh) with a `state_class` of `total`
+or `total_increasing` — power sensors are rejected. For a device that only
+reports watts, create a Riemann-sum helper first (below).
+
+Two things worth knowing:
+
+- **Devices under `device_consumption` are informational.** They are shown as a
+  breakdown of consumption, not subtracted from it — so listing a device twice,
+  or listing a *production* counter as a device, silently skews the picture.
+  Check what a candidate sensor actually measures: a counter named
+  `<inverter name>_total_energy` is usually lifetime PV yield, not consumption.
+- **A battery declared here fixes the accounting automatically.** HA then knows
+  charging is storage rather than consumption and draws the flow diagram
+  correctly — which is the supported alternative to the manual correction in
+  the next section.
+
+### Creating helpers over the API
+
+Helpers that have a config flow (`integration`, `template`, `utility_meter`,
+`derivative`, `threshold`, `min_max`, …) can be created entirely over REST — no
+file access, no restart:
+
+```bash
+# 1. Start the flow, read the returned schema
+curl -s -X POST "${AUTH[@]}" -H "Content-Type: application/json" \
+  -d '{"handler":"integration","show_advanced_options":true}' \
+  "$HA/api/config/config_entries/flow"
+
+# 2. Answer it (fields exactly as the schema names them)
+curl -s -X POST "${AUTH[@]}" -H "Content-Type: application/json" \
+  -d '{"name":"House consumption energy","source":"sensor.house_power",
+       "unit_prefix":"k","unit_time":"h","method":"trapezoidal",
+       "round":3,"max_sub_interval":{"minutes":2}}' \
+  "$HA/api/config/config_entries/flow/$FLOW_ID"
+```
+
+`max_sub_interval` matters for a Riemann sum: without it, a sensor that stops
+updating (because its value is unchanged) contributes nothing, and the integral
+silently stalls.
+
+**Do not assume the resulting entity_id.** HA prefixes helper entities with the
+source entity's device and area, so `name: "House consumption energy"` can land
+as `sensor.<device>_<area>_house_consumption_energy`. Look it up afterwards by
+searching states for the friendly name rather than guessing.
+
+---
+
+## Battery Behind the Meter
+
+A trap that produces plausible-looking but wrong numbers, on any system where a
+battery is added later.
+
+A grid meter at the connection point measures **import and export directly** —
+those stay correct no matter what sits behind it. But "house consumption" is
+usually not measured at all, it is *computed*:
+
+```
+load = pv_production + grid_import − grid_export
+```
+
+Add a battery behind the meter and that formula breaks:
+
+| Situation | What the formula yields | Why it is wrong |
+|---|---|---|
+| Battery charges at 1200 W | load +1200 W | storing is not consuming |
+| Battery discharges at 800 W | load −800 W | consumption understated |
+
+The vendor's own app and cloud portal make exactly the same mistake, for the
+same reason — so "my dashboard disagrees with the manufacturer's app" is not
+proof that the dashboard is wrong once a battery is in play.
+
+The fix needs the battery to report its own flows (most do, over MQTT or a
+local API):
+
+```yaml
+- name: "House consumption (corrected)"
+  unit_of_measurement: "W"
+  device_class: power
+  state_class: measurement
+  availability: "{{ states('sensor.computed_load') | is_number }}"
+  state: >
+    {% set load = states('sensor.computed_load') | float(0) %}
+    {% set net  = states('sensor.battery_charge_power') | float(0)
+                - states('sensor.battery_discharge_power') | float(0) %}
+    {{ [load - net, 0] | max | round(1) }}
+```
+
+Two practical notes:
+
+- **Prepare it before the battery arrives.** Define the two battery terms as
+  template sensors returning `0`. Everything downstream then reads correctly
+  today and becomes correct automatically once you point those two at the real
+  entities and call `template.reload` — no restart, no rework.
+- **Sanity-check the direction.** While charging, the corrected value must be
+  *lower* than the raw computed load. If it is higher, charge and discharge are
+  swapped — an easy mistake when an integration reports a single signed value.
+
+Also worth capturing at the same time, since the inputs are already there:
+self-sufficiency (`1 − grid_import / load`) and self-consumption
+(`1 − grid_export / pv`). Clamp both to 0–100 and guard the division.
+
+### Comparing against the manufacturer's app
+
+Compare **energy totals, never instantaneous power.** Two systems poll at
+different moments, and a house load swings by hundreds of watts as fridges,
+chargers or miners cycle — a snapshot comparison will show a 350 W "error" that
+does not exist. Daily kWh counters, by contrast, should agree to the second
+decimal; if they do, the setup is fine.
+
+Expect a small permanent residual in `pv − load − export`, typically tens of
+watts. That is the inverter's own consumption and measurement tolerance between
+inverter and meter, present in the vendor's raw data — not something to correct.
+
 ---
 
 ## Patching a Custom Component
@@ -865,7 +1026,24 @@ Key points:
 Then:
 
 - **Python changes in a custom component need a full HA restart.** Reloading the config entry re-runs setup with the already-imported module; it does not re-import your edited file.
-- **HACS updates overwrite custom component files.** Keep patched files in your own repo alongside a note on how to redeploy, or the patch will vanish at the next update with no warning.
+- **HACS updates overwrite custom component files.** Keep patched files in your own repo alongside a note on how to redeploy, or the patch will vanish at the next update with no warning. The symptom is indirect: the feature you added is simply missing again, with nothing in the logs.
+
+### Re-applying a patch after an update
+
+Do not just copy your saved file back — that would silently revert whatever the
+update changed. Reconstruct instead:
+
+1. Fetch the new upstream file (`raw.githubusercontent.com/<owner>/<repo>/main/…`;
+   find the repo via HACS `hacs/repositories/list`).
+2. Strip your additions from the saved copy to recover the base you patched.
+3. Diff that base against the new upstream. **Often it is empty** — the update
+   touched other files entirely, and your patch re-applies verbatim.
+4. Re-apply, syntax-check (`ast.parse`), redeploy, restart.
+
+If this recurs, stop patching in place: **fork the repo, apply the patch there,
+and add the fork as a HACS custom repository.** Updates then come from the fork
+and the patch is part of the package. A pull request upstream is worth sending
+too — if it lands, the fork becomes unnecessary.
 
 ---
 
@@ -1326,6 +1504,37 @@ Use a separate `markdown` card in the same grid section instead:
 ```
 
 The failure is easy to misdiagnose, because the entity rows above the error render normally — it looks like a broken entity rather than a broken card option.
+
+### A `loaded` config entry with dead entities
+
+`state: "loaded"` only means setup succeeded once. If every entity of that
+entry reads `unavailable` anyway, the coordinator is failing its updates — the
+entry state will not tell you. `system_log/list` will:
+
+```
+Connection failed for command 'version' after 3 attempts:
+[Errno 113] Connect call failed ('192.168.1.50', 4028)    count: 6216
+```
+
+Read the errno rather than guessing. `113` (EHOSTUNREACH) means nothing
+answered at that address — the device is off or gone, which is *not* the same
+as a wrong IP. `111` (ECONNREFUSED) means the host is up but that port is
+closed, which points at a service or port problem instead.
+
+Note the port in the message: an integration often talks on a different port
+than the device's web UI, so "I can open it in the browser" does not prove the
+integration's path works.
+
+When a device comes back after being offline, the coordinator does not always
+recover on its own. Reloading the entry is enough — no restart:
+
+```bash
+curl -s -X POST "${AUTH[@]}" \
+  "$HA/api/config/config_entries/entry/$ENTRY_ID/reload"
+```
+
+If a device is switched on and off routinely (a solar-controlled socket, say),
+automate that reload on the switch turning on rather than fixing it by hand.
 
 ### "Entities unavailable" is usually an integration problem, not an entity problem
 
