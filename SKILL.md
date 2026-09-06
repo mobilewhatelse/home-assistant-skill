@@ -754,6 +754,60 @@ in auto-generated (strategy) mode. Writing a config to it is equivalent to
 every future device and area has to be added by hand. Never do this to add a
 card; create a separate dashboard instead.
 
+`url_path` must contain a hyphen — `lovelace/dashboards/create` rejects a
+single word like `"mining"` with `invalid_format`. `"all-mining"` works.
+
+### Consolidating dashboards
+
+Merging several dashboards into one — each becomes a view (tab) — is safer as
+a hide than a delete:
+
+```json
+{"type": "lovelace/dashboards/update", "dashboard_id": "avalon_mining",
+ "show_in_sidebar": false}
+```
+
+This removes it from the sidebar without touching its stored config or URL —
+reversible with the same call and `true`, and nothing that still links to the
+old URL breaks. Fetch each source dashboard's views with `lovelace/config`,
+give every view a **unique `path` and `title`** (collisions are likely: two
+dashboards both having a view titled "Monitoring" is common), concatenate them
+into one `views` array, and `lovelace/config/save` it under a new dashboard.
+The card content within each view can be copied unchanged.
+
+### Reordering the sidebar
+
+Sidebar order and hidden-panel state are **synced per-user** through
+`frontend/user_data`, under the single compound key `"sidebar"` — not the more
+guessable `"sidebar-panel-order"` or `"sidebarPanelOrder"` (those keys accept
+writes without error, which makes the mistake easy to miss: the call succeeds
+and reads back exactly what you wrote, but the frontend never looks at it, so
+the sidebar visibly doesn't change).
+
+```json
+{"type": "frontend/set_user_data", "key": "sidebar",
+ "value": {"panelOrder": ["lovelace", "attersee-steuering", "energy", "map", "..."],
+           "hiddenPanels": []}}
+```
+
+Panel identifiers are the `url_path` from `get_panels` (`{"type": "get_panels"}`,
+not `frontend/get_panels`) for custom dashboards and built-ins alike — `energy`,
+`logbook`, `history`, `map`, a custom dashboard's own `url_path`. Include every
+panel you don't want reordered too, in its existing relative position, or it
+may end up sorted unpredictably relative to the ones you did specify.
+
+The one exception: the default Overview dashboard's `url_path` really is
+`lovelace`, but ordering it under that key did not take — it kept sorting to
+the end regardless of position in the list. This may be the historical `states`
+key (Home Assistant's dashboard system was called "States" before Lovelace)
+still governing that one entry as a back-compat quirk; adding `"states"` to
+the list did not resolve it either in the version tested here. Unconfirmed —
+treat Overview's position as not reliably controllable via this API for now,
+and don't spend much time chasing it if the rest of the order is right.
+
+Takes effect on the next full page reload — no HA restart needed, since it's
+pure per-user frontend state, not server config.
+
 ### Supervisor and add-ons
 
 Add-on management goes through `supervisor/api`:
@@ -1045,6 +1099,69 @@ and add the fork as a HACS custom repository.** Updates then come from the fork
 and the patch is part of the package. A pull request upstream is worth sending
 too — if it lands, the fork becomes unnecessary.
 
+**Redeploying "step 4" means copying to the *live* instance, not just updating
+your saved copy.** It is easy to regenerate the patched file, verify it locally,
+commit it to your own repo for safekeeping — and stop there, having never
+touched `/config/custom_components/...` on the actual running system. The
+symptom is silent and delayed: the feature works for a while (the last time it
+really was deployed), then mysteriously "stops working after a restart" once
+something else (an update, a reinstall) later wipes the live file back to
+upstream — even though your repo has looked correct the whole time. Before
+concluding a patch problem is anything more exotic, `diff` your saved copy
+against the file that is actually on the instance. An empty diff means it is
+truly deployed; any diff means step 4 didn't happen yet.
+
+---
+
+## Entity Registry: Renaming Instead of Rewiring
+
+When a device is deleted and re-added (rather than reconfigured in place — see
+"Patching a Custom Component" above for why that matters), Home Assistant
+creates a **new** device with a new `unique_id`, and entity IDs are regenerated
+from scratch. If the new IDs differ from the old ones — a different area
+assigned during setup changes the suggested prefix, for instance — every
+dashboard and automation that hardcoded the old entity_id breaks at once,
+showing "Entity not found."
+
+The tempting fix is to edit every dashboard card and automation reference to
+the new names. Do not — there is a better tool for exactly this situation:
+**rename the entities in the registry back to their old IDs.** This touches
+nothing else; dashboards and automations keep working unmodified, because they
+only ever referenced the entity_id string, not the device.
+
+```json
+{"type": "config/entity_registry/list"}
+```
+
+Filter the result by `device_id` (from `config/device_registry/list`) or by
+`config_entry_id` to get exactly the entities belonging to the recreated
+device, then rename each:
+
+```json
+{"type": "config/entity_registry/update",
+ "entity_id": "sensor.keller_avalon_nano_3s_2_hashrate",
+ "new_entity_id": "sensor.miner_avalon_nano_3s_2_hashrate"}
+```
+
+Renames take effect immediately, no restart needed, and survive a restart once
+applied. Two things to check first:
+
+- **No orphaned entities are already sitting on the target names.** List the
+  full registry and grep for the old prefix before renaming — if the deleted
+  device's entries linger (they normally don't once the config entry is
+  removed), the rename will collide.
+- **The integration's own naming may have drifted independently.** A device
+  that was first set up long ago keeps whatever key names its sensors had
+  *at that time* ("grandfathered"), even if the same integration version
+  would generate different keys for a brand-new device today (a sensor
+  renamed upstream between then and now, still using the old key on the old
+  device). Compare the freshly-recreated device's entities against an
+  untouched sibling device on the same integration to catch this — some
+  fields may need remapping to a differently-named field with the same
+  meaning, and a few may have no equivalent left at all (in which case fix
+  the *reference*, e.g. point a dashboard template at the closest surviving
+  field, rather than renaming something that doesn't exist).
+
 ---
 
 ## Common Pitfalls
@@ -1059,6 +1176,33 @@ YAML last-key-wins — duplicate keys silently override. Always check for accide
   mode: restart
   mode: single    # this wins — restart never applies
 ```
+
+### Automations without an explicit `id:` spawn duplicate entities
+
+An automation entity_id is normally derived once from its `alias` and then
+persisted in the entity registry — but only if the automation has an explicit
+`id:` field pinning it to that registry entry. Without one, a reload can
+regenerate a new internal id, and the entity registry then has to reconcile a
+"new" automation with the same alias-derived name: it keeps the old entry
+(now orphaned, permanently `unavailable`, nothing in YAML feeds it anymore)
+and creates a second one with a `_2` suffix for the one that's actually live.
+Repeat reloads compound this — `_3`, `_4`, and so on, cluttering the registry
+and, worse, making it easy to edit the dead entry in the UI and wonder why
+nothing happens.
+
+Give every automation an explicit `id:` (any stable string, commonly a
+timestamp) to prevent this outright — YAML-authored automations especially,
+since GUI-created ones get one automatically:
+
+```yaml
+- id: "1788685815"
+  alias: My Automation
+  ...
+```
+
+If duplicates already exist, find the live one by state (`on`, matching the
+YAML) versus the orphan (`unavailable`), then remove the orphan via
+`config/entity_registry/remove` and add `id:` going forward so it can't recur.
 
 ### numeric_state trigger already past threshold
 After automations reload, `numeric_state` triggers won't fire if the value is already past the threshold. Always pair with a "steuerung aktiviert" automation and a startup check.
