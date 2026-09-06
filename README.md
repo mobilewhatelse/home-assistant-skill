@@ -31,12 +31,19 @@ A Claude Code skill for developing Home Assistant automations, dashboards, and i
 **Integrations and dashboards**
 - Patching a HACS custom component (e.g. adding a host field to an options
   flow) without breaking entity IDs — and re-applying it after an update
+  (including: verifying the fix actually reached the live instance, not just
+  your own repo)
+- Renaming entities in the registry to fix a broken dashboard after a device
+  is re-created, instead of rewiring every card and automation
+- Consolidating several dashboards into one, and reordering the sidebar
+  (the real per-user data key, and its quirks)
 - Dashboard YAML (Lovelace sections layout)
 - `.storage` files — and why editing them is the wrong tool for integration config
 - AI notification integration (`ai_task.generate_data`)
 
 **Diagnostics**
 - A `loaded` config entry with dead entities: reading errnos, reloading entries
+- Automations without an explicit `id:` spawning duplicate registry entries
 - Common pitfalls and their fixes
 
 ## Usage
