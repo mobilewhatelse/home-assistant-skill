@@ -1824,8 +1824,12 @@ this. The emulation target matters more than it looks:
   coincidence), that reference point doesn't exist, and the tile shows 0
   for the entire remainder of that hour even though the underlying sensor
   is already reporting correctly — it self-resolves once the next full
-  hour completes with a continuously-valid value throughout. Don't
-  conclude the Energy dashboard configuration is wrong from a stuck-at-zero
-  tile alone; check the entity's raw state and the recorder's short-term
-  (5-minute) statistics first — if those already show real, growing
-  numbers, the dashboard tile is just waiting out this hour.
+  hour completes with a continuously-valid value throughout. Confirmed in
+  practice: the tile stayed at 0 for the rest of the hour the restart fell
+  in, then showed the correct accumulated value as soon as the following
+  hour's statistic compiled — no manual fix, config change, or further
+  restart needed. Don't conclude the Energy dashboard configuration is
+  wrong from a stuck-at-zero tile alone; check the entity's raw state and
+  the recorder's short-term (5-minute) statistics first — if those already
+  show real, growing numbers, the dashboard tile is just waiting out this
+  hour.
