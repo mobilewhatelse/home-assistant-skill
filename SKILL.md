@@ -1808,3 +1808,24 @@ this. The emulation target matters more than it looks:
   debugging pairing — it reveals exactly which client IP is polling which
   endpoint — and revert it to the normal level afterwards; left on, it is
   noisy and fills logs fast.
+- **A polled MQTT/local integration can restore real-time fields (power,
+  status) immediately after a restart while cumulative counters lag by
+  many minutes.** If the device only includes its cumulative energy/energy
+  totals in a less-frequent or larger "full report" message type (distinct
+  from the frequent lightweight status ticks), those specific entities sit
+  at `unknown` for a noticeably longer window after every restart than the
+  rest of the device's entities — don't mistake that gap for a broken
+  pairing when the power/status fields already look healthy; give the
+  cumulative fields their own, longer grace period before troubleshooting.
+  This has a knock-on effect on the Energy dashboard: its "current, still
+  open hour" tile is computed as *completed-hours sum + (live value − value
+  recorded exactly at the start of this hour)*. If the entity's value was
+  `unknown` at the moment the hour rolled over (a likely restart timing
+  coincidence), that reference point doesn't exist, and the tile shows 0
+  for the entire remainder of that hour even though the underlying sensor
+  is already reporting correctly — it self-resolves once the next full
+  hour completes with a continuously-valid value throughout. Don't
+  conclude the Energy dashboard configuration is wrong from a stuck-at-zero
+  tile alone; check the entity's raw state and the recorder's short-term
+  (5-minute) statistics first — if those already show real, growing
+  numbers, the dashboard tile is just waiting out this hour.
