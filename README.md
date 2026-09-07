@@ -32,6 +32,11 @@ A Claude Code skill for developing Home Assistant automations, dashboards, and i
 - Emulating a smart meter for a battery that only discovers meters itself
   (protocol choice, mandatory mDNS, why identity values must look like a
   real device, the "found but offline" trap, and restart-safe re-registration)
+- A follow-meter control loop that oscillates: checking the update rate
+  against the device's polling rate before touching the fed value, and why
+  "correcting" the value to cancel the device's own contribution is a
+  tempting but wrong fix that hides the oscillation while silently
+  overproducing
 
 **Integrations and dashboards**
 - Patching a HACS custom component (e.g. adding a host field to an options

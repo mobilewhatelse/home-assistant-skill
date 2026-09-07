@@ -1833,3 +1833,40 @@ this. The emulation target matters more than it looks:
   the recorder's short-term (5-minute) statistics first — if those already
   show real, growing numbers, the dashboard tile is just waiting out this
   hour.
+
+### A follow-meter control loop that oscillates: check the update rate before the math
+
+A battery/inverter following an emulated meter can end up cycling between
+charging and discharging (or feed-in and draw) every 60-90 seconds instead
+of settling. Before suspecting the meter *value* is wrong, check the meter
+*update rate* against the device's own polling rate. If the device polls
+the emulated meter every few seconds but the value only refreshes on a
+much slower cadence (e.g. a cloud-backed integration polling its source
+once a minute), the device re-adjusts many times before it ever sees the
+effect of its previous adjustment — a control loop with that much dead
+time will oscillate almost by construction, regardless of how correct the
+underlying formula is. The fix is to shorten the path: read the true
+source directly and frequently (bypassing the slower intermediate
+integration) rather than manipulating the value that gets fed through.
+
+**A tempting but wrong fix to rule out first:** if the emulated meter sits
+between the true meter and the device, and the device's own charge/
+discharge action visibly shows up in that meter's reading (because the
+device is wired behind it), it's tempting to "correct" the fed value by
+subtracting the device's own contribution — reasoning that the device is
+being fed its own delayed action and chasing its own shadow. Resist this
+without first testing the update-rate fix: subtracting the device's own
+effect from what it's told doesn't just remove a feedback artifact, it
+removes the negative feedback the control loop actually needs to
+self-limit. The oscillation may well disappear — but only because the
+signal now always reads "there is demand" whenever the device is doing
+*anything*, so it locks onto its own output ceiling and stays there
+regardless of the real, changing demand, silently overproducing (in a
+battery/grid context: wasting the excess as involuntary export). A stable-
+looking result is not proof the fix is right; verify against a ground-
+truth reading (e.g., put the device in standby and read the true meter
+directly) that the corrected value tracked reality *before* trusting it,
+and specifically test the case where real demand drops below the device's
+configured power ceiling — that is exactly the regime the original
+oscillation happened in, and the regime a rate fix (unlike a value
+"correction") should fix cleanly.
