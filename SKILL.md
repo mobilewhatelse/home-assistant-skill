@@ -1740,3 +1740,71 @@ Two things this needs to be complete:
 
 - **Set the boolean explicitly at startup** if one state is meant to be the default after a restart. `initial:` covers helper creation, but being explicit in the startup automation makes the intent visible and survives someone later removing `initial:`.
 - **Add a "control re-enabled" automation.** Turning the boolean back on does not re-fire the original `numeric_state` triggers, so the device keeps whatever state manual mode left it in until the next threshold crossing. Trigger on the boolean going `on` and apply the correct state immediately — the same reason startup checks are needed.
+
+## Emulating a Smart Meter for a Battery/Inverter Integration
+
+Some battery systems only accept surplus/consumption data from a smart meter
+they can discover themselves — no generic "push power reading here" API.
+A local add-on that reads real sensor values from HA and re-serves them as an
+emulated meter (mirroring the protocol/API of a specific meter model) bridges
+this. The emulation target matters more than it looks:
+
+- **Don't assume any emulated protocol will be accepted just because it's on
+  the device's compatibility list.** A device may claim support for meter
+  family X while only ever having been tested against real X hardware —
+  the app finds an emulated X but the device itself never starts polling it.
+  Check community issue trackers for the *specific* device model before
+  picking which protocol to emulate; a working combination reported by
+  someone else with the same device is worth more than the general
+  compatibility list.
+- **mDNS/zeroconf discovery is often mandatory, not optional**, when the
+  emulated meter is one that ships with self-announcing hardware. Without an
+  explicit mDNS announcement (e.g. via a pyscript service that registers the
+  service record), the companion app or the device itself never finds the
+  emulated endpoint at all — this fails silently as "just doesn't show up",
+  not as an error.
+- **Never keep default/example identity values (MAC, serial) from the
+  emulator's documentation.** If multiple installations copy the same
+  example values, they collide on the discovery network and connections
+  drop unpredictably whenever another instance of the same setup appears —
+  intermittent and hard to attribute. Generate your own locally-unique
+  values.
+- **A found-but-never-connects device often means the identity values look
+  synthetic, not that transport is broken.** If the app *finds* the emulated
+  meter via discovery but the target device reports it "offline" — while
+  network reachability, mDNS query/answer exchange, and even unicast
+  responses all check out — suspect the identity fields themselves. Some
+  devices silently discard a discovery answer whose vendor ID fields don't
+  resemble their real counterparts (e.g. a MAC using an actual hardware
+  vendor's OUI prefix instead of a fully custom locally-administered
+  address, or a serial number in the vendor's specific format rather than a
+  simple reused string). Before concluding transport is broken, exhaust the
+  cheap checks in order: TCP reachability, discovery packets actually being
+  exchanged (packet capture inside the automation platform if you can't run
+  one on the network itself), then only after those pass, try identity
+  values that mimic a real device's format instead of arbitrary ones.
+  Confirm with a protocol-level packet capture (a small script that binds
+  the discovery port and counts senders/queries) before concluding the
+  answer isn't reaching the device — that isolates "my answer never
+  arrived" from "my answer arrived but was rejected".
+- **After changing the emulated identity, the pairing must usually be redone
+  from scratch on the companion app/device side**, not just restarted on the
+  HA side — many pairing flows have the app derive a device ID once from the
+  discovery record and hand it to the target device over a side channel
+  (e.g. Bluetooth) at pairing time; changing the identity afterwards doesn't
+  retroactively update what the device is looking for.
+- **A self-announcing service registered via a scripting layer (not the
+  add-on itself) is usually lost on every restart of the automation
+  platform**, because the in-memory discovery registry is cleared while the
+  add-on only re-announces at its own startup. If a restart of the add-on
+  alone then fails with a duplicate-name error, the stale registration is
+  still sitting in the platform's registry from before the platform
+  restarted — clear it explicitly (an unregister/cleanup call) before
+  restarting the add-on. This is easy to mistake for "the identity change
+  didn't take" because the symptom (still using the old identity) looks
+  identical; automate the cleanup-then-restart sequence to trigger on
+  platform startup so it isn't a manual step every time.
+- Turn on protocol-level (HTTP/TCP) trace logging on the add-on only while
+  debugging pairing — it reveals exactly which client IP is polling which
+  endpoint — and revert it to the normal level afterwards; left on, it is
+  noisy and fills logs fast.
