@@ -28,6 +28,11 @@ A Claude Code skill for developing Home Assistant automations, dashboards, and i
   management, add-on logs, `system_log/list`
 - Working against a Nabu Casa remote URL when off the LAN
 
+**Battery/inverter integration**
+- Emulating a smart meter for a battery that only discovers meters itself
+  (protocol choice, mandatory mDNS, why identity values must look like a
+  real device, the "found but offline" trap, and restart-safe re-registration)
+
 **Integrations and dashboards**
 - Patching a HACS custom component (e.g. adding a host field to an options
   flow) without breaking entity IDs — and re-applying it after an update
