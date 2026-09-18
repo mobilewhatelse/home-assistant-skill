@@ -28,10 +28,20 @@ A Claude Code skill for developing Home Assistant automations, dashboards, and i
   management, add-on logs, `system_log/list`
 - Working against a Nabu Casa remote URL when off the LAN
 
+**Automations with more than one reason to run**
+- Two independent enable switches without one silently disabling the other
+- Modelling reasons explicitly, switching off only when none holds
+- Threshold triggers are edge-triggered — and only as fast as their source
+  sensor (how to measure that, and what it costs you)
+
 **Battery/inverter integration**
 - Emulating a smart meter for a battery that only discovers meters itself
   (protocol choice, mandatory mDNS, why identity values must look like a
   real device, the "found but offline" trap, and restart-safe re-registration)
+- Testing a device's internal rules with a real load instead of a faked
+  reading — and why a faked one cannot answer some questions at all
+- Settings that snap back silently, settings whose names don't match what
+  they do, and recovering per-unit values from an aggregate
 - A follow-meter control loop that oscillates: checking the update rate
   against the device's polling rate before touching the fed value, and why
   "correcting" the value to cancel the device's own contribution is a
