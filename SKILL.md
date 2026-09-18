@@ -2032,6 +2032,33 @@ rejection, not a delay. Probe the accepted range empirically before
 building automations on an assumed boundary (a zero that "should" work is
 a common one to find rejected, while small non-zero values are accepted).
 
+The rejected boundary is not always at the extreme the entity declares.
+One limit accepted a low double-digit percentage and rejected every
+tested value from there up to 100 — including values well inside the
+entity's stated 0-100 range and below the device's *current* reading, so
+"reject anything that wouldn't lower the value" is not the rule either.
+Bisect the actual boundary with real writes rather than assuming the
+device's own real-time state is what gates acceptance, and re-test at a
+different operating point before trusting a single measurement: a
+boundary that depends on live state (current charge level, current mode)
+can look different an hour later.
+
+### Combining several incomplete controls into one that actually works
+
+A device may expose multiple settings that each partially achieve a goal,
+none of which fully achieves it alone — one has a floor above zero it
+won't go under, another claims to gate the right thing but measurably
+doesn't, a third is a coarse discrete mode (fully on/off) that does reach
+zero but costs a slow transition and blocks an unrelated capability while
+it's in that mode. Rather than picking the least-bad single control,
+branch on state: use the coarse all-or-nothing control only when its side
+effect is free — e.g. a full-off mode that blocks charging is free to use
+exactly when the device is already too full to charge anyway — and fall
+back to the partial control everywhere else. The condition that makes the
+expensive option free is usually already available as its own sensor
+(state of charge, in this case); make the crossover point itself a
+user-adjustable helper rather than a hardcoded threshold.
+
 ### Setting names are not a specification
 
 Verify what a device setting does by measurement, not by its label. A
