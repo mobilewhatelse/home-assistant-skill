@@ -874,6 +874,57 @@ one seen twice is a blip. Filter by the integration's `name`
 
 ---
 
+### Helpers are created over WebSocket, not REST
+
+There is no `POST /api/config/input_boolean/config/<id>` — that path
+returns 404. Helpers are created through the WebSocket API:
+
+```json
+{"id": 1, "type": "input_boolean/create", "name": "My Flag", "icon": "mdi:flag"}
+{"id": 2, "type": "input_number/create", "name": "My Limit",
+ "min": 0, "max": 100, "step": 1, "initial": 50,
+ "unit_of_measurement": "W", "mode": "box"}
+```
+
+The response carries the generated `id`, from which the entity id follows
+(`input_boolean.<id>`) — it is derived from the *name*, so it will not
+match the slug you had in mind. Read it back rather than assuming it.
+Automations, by contrast, *are* writable over REST at
+`POST /api/config/automation/config/<id>`.
+
+Helpers made this way take effect immediately — no restart, unlike helpers
+added to a YAML package.
+
+### Timestamps from the API are UTC
+
+`/api/states` and the history APIs return UTC regardless of the
+configured time zone. Convert before showing a time to the user, or a
+report about "11:44" will not match the 13:44 on their screen and will
+cost a round of confusion.
+
+### Correlating series with different update rates
+
+When comparing two entities whose histories update at very different
+rates, do not match samples by nearest timestamp. A slow entity with two
+data points will have its later value matched backwards onto earlier
+moments of the fast entity, making a change look as though it happened
+much earlier than it did — enough to invent a contradiction that is not
+in the data. Use last-value-at-or-before (step semantics), and when a
+conclusion hinges on when a value changed, pull that entity's transitions
+on their own and read the timestamps directly.
+
+### Attributing a symptom to a change: revert and observe
+
+When a new symptom and a change of yours coincide in time, the cheapest
+discriminator is to put the old configuration back and see whether the
+symptom returns — before defending the change or reasoning further about
+mechanism. Timing correlation alone is weak evidence in a system where
+load, weather and time of day all drift; an A/B revert answers it in
+minutes. Be ready for the revert to exonerate the change: in one case the
+reverted configuration reproduced the *original* fault within 90 seconds,
+which established that the change had fixed that fault and the new
+symptom was a separate matter.
+
 ## Energy Dashboard
 
 Configured over WebSocket, not YAML:
@@ -1741,6 +1792,81 @@ Two things this needs to be complete:
 - **Set the boolean explicitly at startup** if one state is meant to be the default after a restart. `initial:` covers helper creation, but being explicit in the startup automation makes the intent visible and survives someone later removing `initial:`.
 - **Add a "control re-enabled" automation.** Turning the boolean back on does not re-fire the original `numeric_state` triggers, so the device keeps whatever state manual mode left it in until the next threshold crossing. Trigger on the boolean going `on` and apply the correct state immediately — the same reason startup checks are needed.
 
+## Two Independent Enable Switches (multi-reason control)
+
+When a device should run for more than one independent reason — a
+temperature threshold *or* available solar surplus, say — model the
+reasons explicitly. The common failure is to grow the second reason out of
+the first one's automations, leaving the original enable flag as a
+condition everywhere.
+
+### One enable flag as a condition everywhere silently disables the other mode
+
+Symptom: the second switch is on, its trigger condition is plainly
+satisfied, and nothing happens. Cause: the first feature's enable flag is
+still listed as a condition in the second feature's automation, so it acts
+as a master switch over everything rather than as the selector for its own
+mode. The off-automation usually has the same condition, so in the second
+mode the device neither switches on nor off — it is simply inert.
+
+Check every automation belonging to the feature, not just the one that
+looks wrong: the enable-flag condition tends to have been copied into all
+of them, including the "state changed, re-evaluate now" one.
+
+### Model the reasons, switch off only when none holds
+
+Give each reason its own on-automation with only its own enable flag as
+condition. Then write a single off-automation whose condition is that *no*
+reason holds any more:
+
+```yaml
+- condition: template
+  value_template: >
+    {% set reason_a = is_state('input_boolean.mode_a','on')
+                      and states('sensor.x')|float(0) > states('input_number.threshold')|float(0) %}
+    {% set reason_b = is_state('input_boolean.mode_b','on')
+                      and states('sensor.y')|float(0) >= 1 %}
+    {{ not (reason_a or reason_b) }}
+```
+
+Reuse the same expression (inverted) in the "a switch was turned on"
+automation, so flipping a switch establishes the correct state immediately
+instead of waiting for the next threshold crossing. Give threshold-based
+reasons a hysteresis band in the off-expression (`> threshold - 1.5`)
+while the on-trigger uses the bare threshold, otherwise the device
+chatters around the boundary.
+
+Distinguish the trigger kinds in the off-automation: a measurement
+crossing deserves the configured debounce delay, but a human turning a
+switch off should take effect at once. Tag the triggers with `id:` and
+branch on `condition: trigger`.
+
+### Threshold automations are edge-triggered, and only as fast as their source
+
+A `numeric_state` trigger fires on the *crossing*, not while the condition
+persists. Three consequences worth stating in the feature's documentation:
+
+- Manual intervention sticks. Switch the device off by hand while the
+  source is still above the threshold and nothing switches it back on
+  until the value dips below and rises again.
+- A sample lost exactly at the crossing loses the event entirely.
+- A restart leaves whatever state was restored, unless a startup
+  automation re-establishes it.
+
+Before trusting such an automation, measure how often the source sensor
+actually delivers values — and distinguish "the sensor reports rarely"
+from "the value rarely changes" by comparing `last_reported` (advances on
+every report) with `last_changed` (only on a new value). If they are
+always identical, the integration is only forwarding changes. A source
+that updates every few seconds and one that updates twice an hour make
+very different automations out of identical YAML; a slow sensor caps the
+responsiveness of its mode no matter how the automation is written.
+
+A periodic re-evaluation closes the first two gaps. It is not free —
+it re-asserts state against manual intervention, which is sometimes
+precisely what the user does not want — so decide it deliberately and
+record the decision, including the measured update rates that justify it.
+
 ## Emulating a Smart Meter for a Battery/Inverter Integration
 
 Some battery systems only accept surplus/consumption data from a smart meter
@@ -1870,3 +1996,70 @@ and specifically test the case where real demand drops below the device's
 configured power ceiling — that is exactly the regime the original
 oscillation happened in, and the regime a rate fix (unlike a value
 "correction") should fix cleanly.
+### Testing a device's internal rule: use a real load, not a simulated reading
+
+To find out whether a device setting actually does what it claims, resist
+feeding the device a fabricated sensor value — even when you control the
+emulated sensor and faking it looks like the fastest test. A fabricated
+demand is not backed by a real load, so the power the device produces in
+response physically flows somewhere else (in a grid-tied battery context:
+out to the grid). If the rule under test is itself about that destination
+— "maximum export power", say — the test cannot distinguish "the device
+refused because of the rule under test" from "the device refused because
+of the rule about where the power went". Both produce the same
+observation.
+
+Switch on an actual load instead. A few hundred watts of real consumption
+for two minutes puts the power where the test needs it and separates the
+two explanations immediately. Prefer a load whose own power is metered, so
+you can subtract it and read the device's contribution directly.
+
+### A written setting that silently snaps back
+
+A `number` entity's `min`/`max` describe what the *integration* will
+accept, not what the *device* will honour. A value can pass HA's
+validation, get published on the wire (verifiable by reading the
+integration's source — look for the write path, not just the entity
+definition), and still be discarded by the device, which keeps reporting
+its previous value.
+
+Check a write by reading the value back *after* at least one of the
+device's own report cycles. A read immediately after writing may only show
+the integration's optimistic local value, which the next incoming device
+report silently overwrites. If the entity reverts and never even briefly
+shows your value, the device's report already contradicted it — that is a
+rejection, not a delay. Probe the accepted range empirically before
+building automations on an assumed boundary (a zero that "should" work is
+a common one to find rejected, while small non-zero values are accepted).
+
+### Setting names are not a specification
+
+Verify what a device setting does by measurement, not by its label. A
+limit named for one quantity may govern a different one, apply only in
+certain operating modes, or do nothing observable at all. In one measured
+case a setting named as a maximum export power, set to zero, neither
+stopped the battery from discharging nor prevented actual export.
+
+Two practical consequences: don't build an automation on a setting whose
+effect you have not personally observed, and when a vendor app exposes a
+value that the integration only exposes read-only, first confirm the
+setting is worth wanting before looking for a way to write it.
+
+### Recovering per-unit values when only an aggregate is exposed
+
+Integrations often expose a main unit's value, a system aggregate, and a
+count of attached units — but nothing per unit. The missing values can
+sometimes be recovered, and the aggregation rule can be *proved* rather
+than assumed by observing the transition when a unit is added: if the
+aggregate tracked the main unit exactly while it stood alone, and
+afterwards sits exactly at the midpoint between the main unit and an
+integer, the device is averaging arithmetically over equal weights. Then:
+
+```
+unit = (aggregate * (count + 1) - main) / count
+```
+
+Clamp the result to the valid range and gate it on the count being at
+least one. Document it as derived, not measured: with more than one
+attached unit it yields their mean rather than individual values, and a
+capacity-weighted aggregate would skew it.
