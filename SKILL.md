@@ -925,6 +925,28 @@ reverted configuration reproduced the *original* fault within 90 seconds,
 which established that the change had fixed that fault and the new
 symptom was a separate matter.
 
+### pyscript: two interpreter gaps that fail at runtime
+
+pyscript interprets its own AST rather than running CPython, and some
+syntax simply is not implemented. Generator expressions are the common one:
+`sum(x for x in rows)` raises `NotImplementedError: ... ast_generatorexp`
+only when the line executes, not at load. Use a list comprehension
+(`sum([x for x in rows])`), or move numeric work into a
+`@pyscript_compile` function, which runs as native Python — also the right
+place for any loop over thousands of rows, which is slow when interpreted.
+
+`state.get("input_select.x")` can raise `NameError: name ... is not
+defined` for a helper that exists and shows in `/api/states` — seen with
+helpers created after pyscript had loaded, persisting across reloads. With
+`hass_is_global: true`, read `hass.states.get(entity_id)` instead and
+handle `None` yourself.
+
+Also, when a pyscript function has a `startup` trigger, a failure right
+after `pyscript.reload` may just be that trigger racing the reload; call
+the service once manually before concluding the code is wrong — and read
+`system_log/list`, since the service call itself still returns `[]` on
+failure.
+
 ## Energy Dashboard
 
 Configured over WebSocket, not YAML:
