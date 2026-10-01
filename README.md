@@ -89,3 +89,7 @@ gh repo clone mobilewhatelse/home-assistant-skill
 ```
 
 Then copy `SKILL.md` to your project's `.claude/` directory or reference it in your Claude Code skill configuration.
+
+## Contributing
+
+Contributions are welcome. [CONTRIBUTING.md](CONTRIBUTING.md) explains how to add or change a skill (portable frontmatter, structure, content policy).
