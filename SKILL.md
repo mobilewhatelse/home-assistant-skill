@@ -1101,6 +1101,7 @@ Check the alternatives first, because patching is a maintenance burden:
 
 - Give the device a static IP or a DHCP reservation on the router. This is the real fix — do it if the router allows it.
 - Use a hostname instead of an IP in the integration config, if the device registers one via mDNS/DNS.
+- Ask whether the integration is needed at all. A second integration (or a leftover from an earlier experiment) often covers a device that REST or template sensors already serve. Look for the dead integration's entities in `/api/states`, in YAML and pyscript under `/config`, and in the dashboards (`.storage/lovelace*`, read-only). With no consumer, delete the config entry and restart instead of patching — it removes the stale entities for good.
 - Delete and re-add the integration. Check the `config_flow.py` first: if `unique_id` is derived from the host (`async_set_unique_id(host.replace(".", "_"))`), re-adding under a new IP produces a **new** unique_id, therefore new entity IDs, breaking every automation, template and dashboard that referenced the old ones. That usually rules it out.
 
 If you do patch, adding a step to the options flow is a small, contained change:
@@ -1765,6 +1766,21 @@ for e in json.load(sys.stdin):
 ```
 
 A `state` of `setup_retry` with a `reason` points straight at the cause — wrong IP, wrong credentials, device offline. A cryptic `reason` (e.g. `'parsed'`, a raw `KeyError` from the integration) still tells you setup is failing rather than the entities being misconfigured.
+
+### A device drops off MQTT at the same time every night
+
+Before blaming the broker or the router, read the pattern. Pull the logbook of one status sensor over ~two weeks (WebSocket `logbook/get_events`) and the broker add-on log, then compare:
+
+- **To the second, same clock time, every night** → the device itself (scheduled reboot, cloud sync, OTA check). A router restart or DHCP lease would not be second-exact and would hit other devices too.
+- **Who goes silent:** the broker log line `exceeded timeout` for that client means the device stopped sending (broker is uninvolved); `connection closed by client` is a deliberate disconnect, e.g. you changed the broker address in the device's app.
+- **Duration** of 5–7 minutes that always ends by itself matches a boot plus Wi-Fi and MQTT setup.
+- Expect the night's drop to be missing on a day when you reconfigured the device (it may have rebooted early).
+
+If the control loop runs over another path (here: a meter emulation, not MQTT), the cost is a few minutes of missing readings. Document it and stop. If a hard answer is wanted, ping the device during the window: ping dead means reboot, ping alive means only the MQTT session dropped.
+
+### Clean-up after a larger change
+
+Snapshot copies of a script folder (`pyscript_backup`) and one-off debug scripts pile up. Before deleting a snapshot, compare it file by file by hash with the live folder and the repo; differences that are only the changed addresses mean it is obsolete. Keep debug scripts as reference in the repo (a `diagnose/` folder) and remove them from the live `pyscript/` directory, because every `@service` in there stays registered.
 
 ### Keep a feature's helpers and automations in one package file
 
