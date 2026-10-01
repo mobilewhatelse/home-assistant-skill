@@ -2112,3 +2112,76 @@ Clamp the result to the valid range and gate it on the count being at
 least one. Document it as derived, not measured: with more than one
 attached unit it yields their mean rather than individual values, and a
 capacity-weighted aggregate would skew it.
+
+## After a Router Renumbers Your Network
+
+A router restart or a changed DHCP pool can move several devices at once.
+Fix it in this order, and then pin the addresses with DHCP reservations so it
+cannot recur — a reservation is a router setting, not something to patch
+into each integration.
+
+### Find the whole damage first
+
+`GET /api/config/config_entries/entry` and list every entry whose `state` is
+not `loaded` (`setup_retry` + `entry_cannot_connect` is the signature). One
+symptom ("my emulated meter stopped") often hides several independent stale
+addresses. In one case it was three: the address the emulator *announces* for
+itself, the address of the data source it polls, and — unrelated to the
+emulator — the inverter integration inside HA.
+
+An emulator that announces its own IP over mDNS carries that address in its
+config. If HA's address changed, the announcement is wrong even though the
+emulator process runs and its web endpoint answers on the new address.
+
+### How each kind of integration takes a new address
+
+| Integration has | Use |
+|---|---|
+| `supports_reconfigure: true` | start the flow with `{"handler": "<domain>", "entry_id": "<id>"}` against `POST /api/config/config_entries/flow`, submit the new host; result `reconfigure_successful` |
+| options flow with an address field | `POST .../options/flow` with `{"handler": "<entry_id>"}`, walk the steps, then **reload the entry** — saving options alone did not reconnect |
+| neither (some custom components) | usually delete and re-add; check first whether the address is also the `unique_id`, because then entity ids and history change with it |
+
+The `Handler ... doesn't support step reconfigure` error means "use the
+options flow", not that the entry is unfixable. A custom component whose
+options flow is an empty stub returns HTTP 500 from the API — read its
+`config_flow.py` before assuming it is a server problem.
+
+### Values that survive the edit and revert
+
+A YAML helper with `initial:` is re-initialised on restart, so edit the file
+*and* set the live value with `input_text.set_value` — `input_text.reload`
+did not change the running state. Edit only the one line that holds the
+address; a restart would otherwise silently restore the old one.
+
+### Finding devices that moved
+
+When a device's new address is unknown and the router UI is not at hand, a
+read-only sweep of the local /24 works: one GET per address against a path
+only that device type serves, in parallel with a short timeout, keeping the
+responses whose JSON identifies the device. A device that is switched off
+simply does not appear — report that rather than guessing an address.
+
+### Stored credentials are keyed by address
+
+Windows keeps SMB credentials per target name. After the host's address
+changes, `\\<new-address>\share` is denied even though the same account is
+valid; `cmdkey /list` shows the entry is still bound to the old address.
+Connect once with `net use \\<new-address>\<share> /user:<name> <password>`.
+If the password has been forgotten, the Samba add-on's options hold it and
+are readable through the Supervisor API — read it there instead of resetting.
+
+### Check a data-source swap in both operating regimes
+
+A change that makes a sensor "faster" can swap in a quantity that equals the
+old one only under certain conditions. A grid-exchange meter equals the house
+load only when nothing generates (night); with generation the load is
+generation plus exchange. A swap verified at night looked correct and
+produced zero consumption all day for two weeks, and a derived autarky figure
+went wrong with it. When replacing a source, verify once with the system in
+each regime (generating and not generating, charging and discharging) and
+compare against the identity that must hold: `load = generation + import −
+export − storage charge`.
+
+Likewise, state where a number comes from only after confirming it: a sensor
+group presumed to be cloud-backed with a long lag was in fact polled locally
+every ten seconds, and the wrong claim had been written into a code comment.

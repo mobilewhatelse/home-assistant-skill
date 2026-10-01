@@ -48,6 +48,12 @@ A Claude Code skill for developing Home Assistant automations, dashboards, and i
   tempting but wrong fix that hides the oscillation while silently
   overproducing
 
+**When the network changes**
+- Recovering after a router renumbers devices: finding all stale addresses,
+  how reconfigure / options flows / delete-and-re-add differ, values that revert
+  on restart, scanning for moved devices, per-address Windows credentials
+- Verifying a data-source swap in both operating regimes (generating and not)
+
 **Integrations and dashboards**
 - Patching a HACS custom component (e.g. adding a host field to an options
   flow) without breaking entity IDs — and re-applying it after an update
