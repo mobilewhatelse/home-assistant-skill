@@ -54,6 +54,12 @@ A Claude Code skill for developing Home Assistant automations, dashboards, and i
   on restart, scanning for moved devices, per-address Windows credentials
 - Verifying a data-source swap in both operating regimes (generating and not)
 
+**Diagnosis and housekeeping**
+- Reading a nightly MQTT dropout (device vs. broker vs. router) from logbook and
+  broker log
+- Spotting a redundant integration before patching it, and cleaning up snapshot
+  copies and debug scripts safely
+
 **Integrations and dashboards**
 - Patching a HACS custom component (e.g. adding a host field to an options
   flow) without breaking entity IDs — and re-applying it after an update
