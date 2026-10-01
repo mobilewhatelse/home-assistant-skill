@@ -1,3 +1,8 @@
+---
+name: home-assistant
+description: Develop Home Assistant automations, dashboards, and integrations in YAML - solar-based device control, low/mid/high modes, startup and periodic checks, energy metering with batteries, driving Home Assistant from outside through the REST and WebSocket APIs, automations with more than one reason to run, and battery or inverter integration. Use when the user works on a Home Assistant configuration, automations, helpers, or dashboards, or diagnoses unreliable integrations and devices.
+---
+
 # Home Assistant Development Skill
 
 A comprehensive guide for developing Home Assistant automations, dashboards, and integrations using YAML configuration files.
