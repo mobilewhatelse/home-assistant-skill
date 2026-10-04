@@ -1772,16 +1772,16 @@ for e in json.load(sys.stdin):
 
 A `state` of `setup_retry` with a `reason` points straight at the cause — wrong IP, wrong credentials, device offline. A cryptic `reason` (e.g. `'parsed'`, a raw `KeyError` from the integration) still tells you setup is failing rather than the entities being misconfigured.
 
-### A device drops off MQTT at the same time every night
+### A device drops off at the same time every day: check the other devices first
 
-Before blaming the broker or the router, read the pattern. Pull the logbook of one status sensor over ~two weeks (WebSocket `logbook/get_events`) and the broker add-on log, then compare:
+One device that goes `unavailable` at the same second every day looks like that device's own schedule (reboot, cloud sync). Do not conclude that from one device. First compare against every other device:
 
-- **To the second, same clock time, every night** → the device itself (scheduled reboot, cloud sync, OTA check). A router restart or DHCP lease would not be second-exact and would hit other devices too.
-- **Who goes silent:** the broker log line `exceeded timeout` for that client means the device stopped sending (broker is uninvolved); `connection closed by client` is a deliberate disconnect, e.g. you changed the broker address in the device's app.
-- **Duration** of 5–7 minutes that always ends by itself matches a boot plus Wi-Fi and MQTT setup.
-- Expect the night's drop to be missing on a day when you reconfigured the device (it may have rebooted early).
+- Pull the history of several unrelated devices (different vendors, Wi-Fi and wired) over a few days (WebSocket `history/history_during_period`) and list when each went `unavailable`. If they all drop in the same minute, it is the network (router or mesh node), not the device.
+- Check the Home Assistant host itself: the Supervisor serves the host journal (`/host/logs/boots/0`; the `Range: entries=:0:N` header returns more than the last 100 lines). A wired host that logs `Link is Down/Up` and a fresh DHCP lease at that minute confirms the router side. The journal is in **UTC**, the logbook in local time after conversion; mixing them shifts everything by two hours.
+- Look for the period: 12 hours between events points to a lease or maintenance cycle on the router, not to anything on the device. Match the clock times against the router's scheduled reboot or auto-maintenance setting (often delayed while traffic is present, so it runs minutes late).
+- Broker log wording: `exceeded timeout` means the client stopped sending; `connection closed by client` is a deliberate disconnect such as a changed broker address in the device's app.
 
-If the control loop runs over another path (here: a meter emulation, not MQTT), the cost is a few minutes of missing readings. Document it and stop. If a hard answer is wanted, ping the device during the window: ping dead means reboot, ping alive means only the MQTT session dropped.
+A short, self-healing gap (5–7 minutes) is cheap when the control loop does not depend on that path. A rare long one is not: a router can come back from its maintenance cycle half-broken (DNS degraded, NetworkManager reporting site-only connectivity) while the link is up. A reboot of just the router may not clear it; powering everything off and on did. Keep the host journal and history evidence, because from Home Assistant you cannot see why the router hung.
 
 ### Clean-up after a larger change
 
