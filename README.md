@@ -55,8 +55,8 @@ A Claude Code skill for developing Home Assistant automations, dashboards, and i
 - Verifying a data-source swap in both operating regimes (generating and not)
 
 **Diagnosis and housekeeping**
-- Reading a nightly MQTT dropout (device vs. broker vs. router) from logbook and
-  broker log
+- Telling a device-specific daily dropout from a network one (compare other devices,
+  host journal, router maintenance cycles)
 - Spotting a redundant integration before patching it, and cleaning up snapshot
   copies and debug scripts safely
 
