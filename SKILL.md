@@ -887,9 +887,19 @@ returns 404. Helpers are created through the WebSocket API:
 ```json
 {"id": 1, "type": "input_boolean/create", "name": "My Flag", "icon": "mdi:flag"}
 {"id": 2, "type": "input_number/create", "name": "My Limit",
- "min": 0, "max": 100, "step": 1, "initial": 50,
+ "min": 0, "max": 100, "step": 1,
  "unit_of_measurement": "W", "mode": "box"}
 ```
+
+**Do not pass `initial` to a helper the user will change.** A helper that has
+an `initial` is reset to it on **every Home Assistant restart**, so a time or
+limit the user adjusted on a dashboard silently jumps back. Without `initial`,
+HA restores the last state. Set the starting value with `input_number.set_value`
+/ `input_datetime.set_datetime` after creating it. Removing `initial` later
+needs `input_number/update` (or `input_datetime/update`) with the **complete**
+configuration minus `initial` — it replaces rather than merges, and `null` or
+an empty string are rejected. Before such an update, read the current values
+and set them again afterwards, in case the user changed them in the meantime.
 
 The response carries the generated `id`, from which the entity id follows
 (`input_boolean.<id>`) — it is derived from the *name*, so it will not
@@ -1022,6 +1032,24 @@ curl -s -X POST "${AUTH[@]}" -H "Content-Type: application/json" \
 `max_sub_interval` matters for a Riemann sum: without it, a sensor that stops
 updating (because its value is unchanged) contributes nothing, and the integral
 silently stalls.
+
+### Deciding on a smoothed value, not the instant reading
+
+A rule such as "keep the load on if there is enough surplus right now" is
+fragile when the surplus sensor jumps (a battery that soaks up the surplus can
+read 0 W seconds after 750 W). Decide on a short **average** instead, built with
+the `statistics` helper (flow: name and source entity, then the characteristic,
+then `max_age`, `sampling_size`, `keep_last_sample`, `precision`):
+
+- A sensor that only reports **on change** (it stays silent at 0) needs
+  `state_characteristic: average_step` and `keep_last_sample: true`. With
+  `average_linear` the gaps are interpolated and the helper produced **negative**
+  values for a sensor that can never be negative.
+- The characteristic cannot be edited afterwards (the options flow shows it read-only).
+  Create a new helper, rename the old entity id away and give the new one the
+  old id, so automations and dashboards need no change.
+- Test with the real values: log the instant reading and the average side by
+  side while the rule runs, as the difference is exactly what the average is for.
 
 **Do not assume the resulting entity_id.** HA prefixes helper entities with the
 source entity's device and area, so `name: "House consumption energy"` can land

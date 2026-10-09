@@ -59,6 +59,9 @@ A Claude Code skill for developing Home Assistant automations, dashboards, and i
   host journal, router maintenance cycles)
 - Spotting a redundant integration before patching it, and cleaning up snapshot
   copies and debug scripts safely
+- Helpers created over the API: why `initial` resets them on every restart, and
+  deciding on a short average (statistics helper, step vs. linear) instead of a
+  jumpy instant reading
 
 **Integrations and dashboards**
 - Patching a HACS custom component (e.g. adding a host field to an options
