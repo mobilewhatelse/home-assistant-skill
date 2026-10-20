@@ -63,6 +63,14 @@ A Claude Code skill for developing Home Assistant automations, dashboards, and i
   deciding on a short average (statistics helper, step vs. linear) instead of a
   jumpy instant reading
 
+**Tuya devices that regulate themselves**
+- Letting a thermostat socket run its own setpoint and weekly program so a
+  network outage does not stop the heating; HA only sets and verifies the mode
+- Reaching data points the core Tuya integration does not expose (Tuya
+  Developer Platform, API Explorer, signed cloud calls from pyscript)
+- Pitfalls: acknowledged-but-ignored writes, the switch that is not the relay,
+  odd factory defaults, the raw weekly-program format, not resending after a restart
+
 **Integrations and dashboards**
 - Patching a HACS custom component (e.g. adding a host field to an options
   flow) without breaking entity IDs — and re-applying it after an update

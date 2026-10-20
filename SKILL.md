@@ -657,6 +657,8 @@ curl -s "${AUTH[@]}" "$HA/api/states"          # everything
 
 Use this to confirm an entity actually exists and holds a sane value before writing automations against it. Typos in entity IDs are the single most common cause of automations that "run but do nothing".
 
+When you check from Windows PowerShell 5.1 instead of curl: `Invoke-RestMethod` hands a JSON array to the pipeline as **one** object, so `Invoke-RestMethod .../api/services | Where-Object { $_.domain -eq 'x' }` does not filter per item and can report that services "disappeared". Assign the result to a variable first, then filter. Likewise, an entity whose state and attributes did not change keeps its old `last_updated`; do not use it as proof that a refresh ran — add a read-time attribute if freshness matters.
+
 ### Call services
 
 ```bash
@@ -1270,6 +1272,42 @@ applied. Two things to check first:
   field, rather than renaming something that doesn't exist).
 
 ---
+
+## Tuya Devices: Let the Device Regulate, HA Only Sets the Mode
+
+A control loop in HA (switch on below X, off above Y) stops at the first network outage — fatal for heating in a remote house whose router drops out. Many Tuya thermostat sockets can regulate on their own: temperature probe, setpoint, hysteresis, weekly program and an internal clock. Then HA's job shrinks to **setting the mode once and verifying it**; an outage no longer matters because the device keeps running what it was last told.
+
+### The official integration shows only part of the device
+
+The core Tuya integration only creates entities for data points (DPs) it maps for the device category. A thermostat socket showed up as nothing but a switch and a temperature sensor. Its diagnostics download lists the standard instruction set (`function`, `status_range`), but even that missed the operating mode, the weekly program and the relay state.
+
+To see everything, use the **Tuya Developer Platform**: create a cloud project (industry and development method "Smart Home", data center matching the app account), link the Smart Life app account by scanning the project's QR code in the app ("Automatic Link"), then in the API Explorer:
+
+- **Query Properties** — `GET /v2.0/cloud/thing/{device_id}/shadow/properties`: every DP with its current value, including non-standard ones.
+- **Query Things Data Model**: enum ranges, read/write access, scale and step per DP.
+
+Explore with GET only; the explorer acts on the real devices. Prove write access with one harmless write (e.g. display brightness) and set it back — a device list showing "Device Permission: Read" did not block writes. Devices added to the app later appear in the project automatically; reload the HA Tuya integration to see them in HA too.
+
+### Calling the cloud API from HA
+
+- Token: `GET /v1.0/token?grant_type=1`, cache it until `expire_time`. Signature: `HMAC-SHA256(secret, client_id + access_token + t + stringToSign)`, upper-case hex; `stringToSign = METHOD + "\n" + sha256(body) + "\n\n" + path_with_query`; for the token request `access_token` is empty.
+- Write: `POST /v2.0/cloud/thing/{device_id}/shadow/properties/issue` with body `{"properties": "{\"work_mode\": \"heat\"}"}` — `properties` is itself a JSON **string**.
+- In pyscript, put the HTTP and signing code in a `@pyscript_compile` function (normal imports work there) and call it with `task.executor(...)` so it does not block the event loop.
+- Keep the credentials in a file under `/config` that is not in the repo. Do not have the user paste the secret into a chat; let them fill a template file and check only length and character set before using it.
+
+### Pitfalls that cost real time
+
+- **`success: true` from the cloud does not mean the device applied it.** A setpoint written while the device was in socket mode was acknowledged and silently ignored; it is only taken in heating mode. Set the mode first, then the setpoint, and always read back and compare.
+- **The switch HA shows is not the heater.** In thermostat or program mode the socket-switch DP stays off while the device heats; only the relay-state DP tells whether it is heating right now. Build "is heating" sensors from that, or the dashboard shows everything off while every room heats.
+- **New devices come with surprising defaults.** One arrived with the weekly program type set to cooling and a factory program, another with its master switch off (a long press of the MODE key does that on site). Set and verify program type and master switch every time you enable heating.
+- **Weekly program as raw data.** On this model each day is a base64 blob: day number (1–7), then 6 × `[hour, minute, temperature × 10 as 16-bit big-endian]`, unused slots repeating the last one. Decode it to show it, encode it from dashboard helpers (start hour and temperature for day and night), write per day, read back, and back up the old raw values first.
+
+### Robust mode switching
+
+- Send on a mode change or a changed value only, read back, and record per device whether it confirmed. Retry the unconfirmed ones periodically and when the device's entity returns from `unavailable`; notify if something stays pending for hours.
+- **Do not resend the mode after an HA restart.** If the `input_select` were not restored it would start at its first option — typically "Off" — and switch the heating off remotely. The devices keep their mode on their own.
+- Remove `initial:` from YAML `input_number` helpers that users adjust on a dashboard; with it they reset on every restart (the same trap as with API-created helpers, see above).
+- Cloud calls count against the plan's quota; poll status every 15–30 minutes and refresh right after a change instead of polling fast.
 
 ## Common Pitfalls
 
