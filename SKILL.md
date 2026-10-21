@@ -726,6 +726,41 @@ If local access suddenly stops working entirely — ping succeeds but every
 port is closed, Samba is gone — check whether you are still on the same
 network before diagnosing the HA host.
 
+### iPhone home-screen widgets with Scriptable
+
+The HA companion app's widgets show single entities. For a table or a custom
+layout (rings, bars, tiles), a [Scriptable](https://scriptable.app) script
+can render a widget from the REST API — at home and away, through the remote URL.
+
+- **One request per refresh:** `POST /api/template` with a Jinja template that
+  returns everything as JSON (`{{ {...} | tojson }}`, loops via `namespace`).
+  Test the template against the live instance before writing the layout.
+- **Token in the iOS Keychain**, not in the script: prompt with a secure text
+  field on the first run in the app (`config.runsInWidget` is false there),
+  `Keychain.set`, and remove it again on HTTP 401. Several widget scripts can share one key.
+- Support the sizes via `config.widgetFamily`; set `widget.url` to
+  `homeassistant://navigate/<dashboard>` so a tap opens the dashboard, and
+  `refreshAfterDate` (iOS decides the real cadence, typically 10–15+ minutes).
+- Make the device state readable at a glance (e.g. charging / discharging / idle
+  as a coloured label), not only as a small icon.
+
+Pitfalls when getting the script onto the phone:
+
+- **Wrap the main code in an `async function` and call it.** A top-level
+  `await` failed with "Unexpected identifier … Expected ';' after variable declaration".
+- **Long scripts get truncated when copied by hand** ("Unexpected end of script").
+  Serving the file from `/config/www` (reachable as `/local/<file>`) and using
+  "Select All" in Safari works — but `/local` needs **no authentication**: put no
+  secrets in it and delete the file afterwards.
+- **`/local` serves `.txt` without a charset**, so Safari mangles non-ASCII
+  characters (a dash became "â€“"). Keep the script pure ASCII: write `–`,
+  `ä` and emoji as `\uXXXX` escapes in string literals.
+- An SF Symbol name that does not exist renders blank or as a plain circle; prefer
+  common names (`bolt.fill`, `battery.50percent`, `moon.zzz.fill`).
+
+Side note for PowerShell helpers: `R` is a built-in alias (`Invoke-History`), so a
+helper function named `R` silently never runs.
+
 ---
 
 ## WebSocket API
@@ -1306,6 +1341,7 @@ Explore with GET only; the explorer acts on the real devices. Prove write access
 
 - Send on a mode change or a changed value only, read back, and record per device whether it confirmed. Retry the unconfirmed ones periodically and when the device's entity returns from `unavailable`; notify if something stays pending for hours.
 - **Do not resend the mode after an HA restart.** If the `input_select` were not restored it would start at its first option — typically "Off" — and switch the heating off remotely. The devices keep their mode on their own.
+- **But do rebuild the display after a restart, read-only.** States created by pyscript (`state.set`) are not restored, so status and "confirmed" sensors are empty or `unknown` after every restart and the dashboard looks broken although the devices are fine. Run a check shortly after start that reads every device, compares mode and program with the helpers, and writes the result ("ok" / "differs") — without sending anything and without triggering the retry logic.
 - Remove `initial:` from YAML `input_number` helpers that users adjust on a dashboard; with it they reset on every restart (the same trap as with API-created helpers, see above).
 - Cloud calls count against the plan's quota; poll status every 15–30 minutes and refresh right after a change instead of polling fast.
 
