@@ -27,6 +27,8 @@ A Claude Code skill for developing Home Assistant automations, dashboards, and i
 - WebSocket API: dashboards without file access, Supervisor and add-on
   management, add-on logs, `system_log/list`
 - Working against a Nabu Casa remote URL when off the LAN
+- iPhone home-screen widgets with Scriptable: one template request, token in
+  the Keychain, and the pitfalls of getting a script onto the phone
 
 **Automations with more than one reason to run**
 - Two independent enable switches without one silently disabling the other
@@ -70,6 +72,7 @@ A Claude Code skill for developing Home Assistant automations, dashboards, and i
   Developer Platform, API Explorer, signed cloud calls from pyscript)
 - Pitfalls: acknowledged-but-ignored writes, the switch that is not the relay,
   odd factory defaults, the raw weekly-program format, not resending after a restart
+  (but rebuilding the display read-only)
 
 **Integrations and dashboards**
 - Patching a HACS custom component (e.g. adding a host field to an options
