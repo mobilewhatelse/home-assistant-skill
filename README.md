@@ -74,6 +74,15 @@ A Claude Code skill for developing Home Assistant automations, dashboards, and i
   odd factory defaults, the raw weekly-program format, not resending after a restart
   (but rebuilding the display read-only)
 
+**Claude Platform and grid tariffs**
+- A daily house report written by Claude from metering data: computed in code,
+  phrased by the model, read-only tools, structured output, caching, cost per run,
+  off after restart
+- Power-based grid tariffs: measuring quarter-hour peaks, telling counter jumps
+  from real peaks, and a guard that throttles the wallbox and other loads only as
+  far as needed (phase-switch pauses, hysteresis, offline simulation)
+- pyscript reloads that leave a control loop running twice, and a single-instance guard
+
 **Integrations and dashboards**
 - Patching a HACS custom component (e.g. adding a host field to an options
   flow) without breaking entity IDs — and re-applying it after an update

@@ -999,6 +999,29 @@ the service once manually before concluding the code is wrong — and read
 `system_log/list`, since the service call itself still returns `[]` on
 failure.
 
+### pyscript: a reload can leave the old instance running
+
+A `period(...)` trigger that is mid-way through a service call during
+`pyscript.reload` (even a reload of the whole integration entry) can survive:
+the old module keeps firing next to the new one. Symptoms: log lines appear
+twice in the same second, a status sensor alternates between two sets of values,
+and two control loops fight (one throttles, the other releases). Old zombies
+only die with a full HA restart. Make every control loop single-instance
+from the start:
+
+```python
+_INSTANZ = datetime.datetime.now().strftime("%H:%M:%S.%f")
+state.set("pyscript.my_loop_instance", _INSTANZ)   # newest load wins
+
+@time_trigger("period(now, 20s)")
+def my_loop():
+    if hass.states.get("pyscript.my_loop_instance").state != _INSTANZ:
+        return   # an older copy left behind by a reload - do nothing
+```
+
+Also keep a loop's state that must survive a reload (e.g. the meter reading at
+the start of the current quarter hour) in a file, not only in module globals.
+
 ## Energy Dashboard
 
 Configured over WebSocket, not YAML:
@@ -1344,6 +1367,92 @@ Explore with GET only; the explorer acts on the real devices. Prove write access
 - **But do rebuild the display after a restart, read-only.** States created by pyscript (`state.set`) are not restored, so status and "confirmed" sensors are empty or `unknown` after every restart and the dashboard looks broken although the devices are fine. Run a check shortly after start that reads every device, compares mode and program with the helpers, and writes the result ("ok" / "differs") — without sending anything and without triggering the retry logic.
 - Remove `initial:` from YAML `input_number` helpers that users adjust on a dashboard; with it they reset on every restart (the same trap as with API-created helpers, see above).
 - Cloud calls count against the plan's quota; poll status every 15–30 minutes and refresh right after a change instead of polling fast.
+
+## Claude Platform from pyscript: a Daily House Report
+
+A daily report ("my house writes a diary") with a week ahead, written by Claude
+from real metering data. The pattern generalises to any "explain my data" job.
+
+- **Compute in code, phrase in the model.** pyscript gathers and calculates
+  everything (recorder day statistics, weather `get_forecasts`, PV forecast);
+  the model only writes. A number the model never has to invent cannot be wrong.
+- **Call the Claude Platform directly** when you want tool use, structured output
+  and per-run token counts; the HA `ai_task` integration is fine for a plain text.
+  The `anthropic` SDK is already installed in HA (the Anthropic integration ships
+  it), so a `@pyscript_compile` function can `import anthropic` and run the whole
+  loop in `task.executor` (blocking HTTP must not run in the event loop).
+- **Key** in a small JSON file under `/config`, never in the repo or chat; create
+  it in a dedicated Console workspace with a spend limit so cost is capped and
+  reported separately. The account that owns the key pays — not whoever runs the
+  coding assistant.
+- **Read-only tools only** (hourly values of a day, longer day series, room
+  states): the model looks things up when something stands out ("grid import 3×
+  the average" → hourly profile → "the car charged 03:00–07:00"). It cannot switch
+  anything — automations decide, the model explains.
+- **Structured output** (`output_config.format` JSON schema) for text, one-line
+  summary, anomalies and one tip per forecast day; no text parsing.
+- **Prompt caching:** keep the system prompt and tool list byte-stable (no date
+  in them; put the date in the user message) and set top-level `cache_control`.
+- **Record `usage`** per round (input, cache write/read, output) and compute the
+  cost per run and per month into a sensor — a typical run was 2 rounds, ~20 s,
+  a few US cents.
+- **Off by default after a restart** (`input_boolean` with `initial: false`) plus a
+  "write now" button, so nothing costs money unless wanted; restore the last
+  report from a file at startup instead of calling the model again.
+- A cheap estimate for days beyond a 2-day PV forecast: percentile of recent daily
+  PV by weather condition, scaled so tomorrow's estimate matches the real forecast.
+
+## Power-Based Grid Tariffs: Quarter-Hour Peaks
+
+Some grid tariffs charge for the **highest 15-minute average import of the month**
+(e.g. Austria from 2027, with a higher rate above 10 kW). What matters is the
+mean over :00/:15/:30/:45 windows, not second-long spikes.
+
+### Measuring
+
+- Live: at each quarter boundary take the **import energy counter** difference
+  (Wh) and divide by the elapsed time. Use the state's `last_reported` (set even
+  when the value did not change, e.g. no import at night), not `last_updated`.
+  Publish it as a sensor with `state_class: measurement` so hourly max/mean stay
+  in long-term statistics forever — that becomes the year chart.
+- History: 5-minute statistics (kept ~10 days) give exact quarters; hourly
+  statistics only give the hour mean, a **lower bound** of the true quarter peak —
+  label it as such.
+- **Counter jumps are not peaks.** After an integration outage the accumulated
+  hours land in one value (seen: 55 kW in an hour, 12,000 kW in a first 5-minute
+  value). Drop values right after a gap, cross-check against a second energy
+  source (cloud portal counter) and take the smaller value on a large mismatch,
+  and reject anything above the physical connection limit.
+- A storage-mode dashboard's `url_path` must contain a hyphen.
+
+### A guard that keeps the quarter under a limit
+
+Every 20 s: `E` = energy imported so far in this quarter (from the counter),
+`allowed = (target × 0.25 h − E) / remaining time`, `excess = import now − allowed`.
+
+- Act only as far as needed and in a fixed order of levers, gentlest first, e.g.
+  wallbox current down (3-phase 16→6 A, then 1-phase, never stop) → pool pump →
+  water heater plug → in an emergency release the home battery → notify.
+  Release in reverse order, stepwise, and only up to **min(allowed, target)** —
+  near the end of a quarter `allowed` becomes huge (unused budget), and using it
+  makes the charger ramp up and slam down at every boundary.
+- Switch back only what the guard switched itself, and only if the device's own
+  schedule still wants it on.
+- **A phase switch interrupts charging** for tens of seconds and the charger may
+  report "Complete" meanwhile; a guard that reads "not charging" from the power
+  value releases everything and oscillates. Remember the switch time, block the
+  wallbox for ~2 minutes, and add hysteresis: go 1-phase only after 3-phase
+  minimum has been insufficient for 2 minutes (cooking appliances cycle), go back
+  to 3-phase only after 5 minutes of headroom. The "phases in use" sensor lags —
+  trust what the guard set.
+- Started mid-quarter (restart/reload), `E` must come from the counter, not from
+  integrating since start, or the guard thinks the budget is untouched.
+- Only active when the charger can draw from the grid (not in a PV-only mode, or
+  charging while there is no sun); a switch that is on after every restart.
+- Before going live, run the pyscript file **offline**: `exec` it with stub
+  `hass`/`state`/`service`/`task` objects and a small physics model
+  (wallbox amps × phases, house base load, a stove switching on). It exposed the
+  ramp-up-at-boundary oscillation before any real car was involved.
 
 ## Common Pitfalls
 
