@@ -1454,6 +1454,117 @@ Every 20 s: `E` = energy imported so far in this quarter (from the counter),
   (wallbox amps × phases, house base load, a stove switching on). It exposed the
   ramp-up-at-boundary oscillation before any real car was involved.
 
+## Custom Energy Dashboard: button-card, Energy Period Sums, iPhone Widgets
+
+A live energy-flow picture, period sums that follow the Energy date picker, and
+matching phone widgets. Everything below was built and checked against a real
+instance; the card code is plain JavaScript inside HA templates.
+
+### Installing a HACS frontend card over the API
+
+`hacs/repositories/list` (`categories: ["plugin"]`) finds the repository id,
+`hacs/repository/download` (`repository`, `version`) installs it and registers the
+Lovelace resource. A page that is already open does **not** load new resources —
+an unknown card then shows a generic "configuration error" until the page (or the
+phone app) is fully reloaded.
+
+### button-card v7 (as of 2026)
+
+- **`styles` blocks are lists of objects**, one property per entry
+  (`- padding: 8px`), as in YAML. Strings like `"padding: 8px"` are silently
+  ignored (no error, no effect) — background, width and borders just don't apply.
+- **No `triggers_update`.** Entities read through `hass.states[...]` inside the
+  template are tracked automatically. A card that reads something else (for
+  example `hass.connection`) is never redrawn: add `update_timer: "3s"`.
+- Templates run with `'use strict'` as `new Function("states","entity","user","hass","variables","html","helpers", body)`;
+  a template is `[[[ ... ]]]` and may return a whole SVG string. Test it offline
+  in Node with the same signature before saving.
+- A custom dashboard's `url_path` needs a hyphen.
+
+### An animated flow diagram in one SVG
+
+- Draw nodes as coloured header + dark body, and connect them with a path per
+  flow plus three `<circle>` with `<animateMotion path=… keyPoints="0;1"|"1;0"
+  keyTimes="0;1" calcMode="linear" begin="-k·dur/3">`. The sign of the power picks
+  the direction (`keyPoints`), `dur ≈ 4.5 − log10(|W|)` clamped to 0.8–4 s the
+  speed, below a few watts draw only the line. `calcMode="linear"` is required or
+  `keyPoints` is ignored.
+- Draw the dark panel **inside** the SVG (a `<rect>` background) so the card does
+  not depend on theme or card CSS.
+- Phones need their own layout: a 4-column picture scaled to 360 px has 6-px
+  text. Pick a narrow tall layout (two columns around a central spine) when
+  `window.innerWidth < 700`; the card redraws on the next update.
+- Show the *meaning*, not just a signed number: "full", "standby", "charging",
+  "discharging". A battery at its charge limit reports a few watts of own
+  consumption as "discharge" — treat |P| below ~50 W as idle.
+
+### Sums for the period the Energy date picker has selected
+
+The standard energy cards share a frontend collection at
+`hass.connection._energy` (`state.start`, `.end`, `.prefs`, `.stats`,
+`.statsMetadata`; statistics rows carry `change`). A custom card can sum
+`prefs.energy_sources` over that period (convert `Wh`/`MWh` using the metadata)
+and therefore follows the date picker — an internal API, so fall back to a
+"waiting" text when it is missing, and redraw on a timer.
+
+Values that are not Energy sources (a charger, a second house, a daily peak) can't
+be read that way: have pyscript write them **per day** as attributes of one sensor
+(only non-zero days, ~400 days stay far below the attribute size limit) and let
+the card sum the days between `start` and `end`.
+
+### Making the built-in cards match: a view theme
+
+A theme file in the themes folder (`primary-background-color`,
+`card-background-color`, `ha-card-border-*`, `energy-*-color`, …), reloaded with
+`frontend.reload_themes`, applied with `theme: <name>` on the **view**, restyles
+the standard energy cards (including chart colours) for that dashboard only.
+
+### The dashboard a phone opens at start
+
+`frontend/set_user_data` with key `core` and `defaultPanel: "<url_path>"`
+(merge into the existing value). It is stored per user, so it applies to every
+device of that user; some app versions don't show the setting in the profile at all.
+
+### Scriptable widgets that draw a picture
+
+- One request per refresh (`POST /api/template` returning JSON), draw with
+  `DrawContext` (rounded header via `Path` + `addQuadCurve`, arrows as filled
+  triangles), set it as `backgroundImage`. Animation is impossible — show direction
+  with arrowheads and symbols.
+- Small, medium and large each get their own layout; fit the value font to the
+  string length instead of one size.
+- Keep an offline render loop: mock `DrawContext`/`Path`/`Color` in Node, emit SVG
+  and screenshot it. It caught overflowing text, a layout wider than the widget
+  and a missing font method before anything reached the phone.
+- Two bars with the same title can mean different things: "where does the power
+  come from" as a *momentary* share jumps with every cloud; as a *day* share
+  (consumption split into direct solar, battery discharge, grid import) it matches
+  the self-sufficiency figure. Say which one the widget shows.
+- **PowerShell trap:** `git show <rev>:file | Set-Content -NoNewline` joins all
+  lines into one — a script whose first line is a `//` comment then does nothing.
+  Restore with `git checkout <rev> -- file`.
+
+### Getting files onto the server without Samba
+
+When a file share is not mounted, an installed config-editor integration that
+exposes a WebSocket command (`list` / `load` / `save`, per extension) can write new
+theme, pyscript and static files with the normal admin token. It usually cannot
+delete: overwrite with a stub. Never touch the secrets file or token files.
+
+### A wallbox that says "Complete" although the car is not full
+
+- Check the car's own data first (state of charge, "charging active"). A status
+  of "Complete" can be latched on the wallbox side: with the car below its limit
+  and surplus available, pressing the wallbox's *start charging* button restarted
+  the session within seconds; unplugging does the same.
+- In PV-surplus mode a charger has a **minimum charging time** (5 minutes by
+  default). If a cloud takes the sun away right after the start it keeps
+  charging from the grid for that time, and each start/stop of the session is a
+  new chance for the car to end it. Phase switches count as interruptions.
+- Detect it instead of guessing: charger "Complete", power < 100 W, car below its
+  limit, export averaged over 5 minutes above the start threshold, all true for
+  20 minutes → push (at most once per few hours).
+
 ## Common Pitfalls
 
 ### Duplicate YAML keys
