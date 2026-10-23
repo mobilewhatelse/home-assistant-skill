@@ -83,6 +83,15 @@ A Claude Code skill for developing Home Assistant automations, dashboards, and i
   far as needed (phase-switch pauses, hysteresis, offline simulation)
 - pyscript reloads that leave a control loop running twice, and a single-instance guard
 
+**Custom energy dashboard and widgets**
+- An animated energy-flow card (button-card v7: style format, automatic entity
+  tracking, redraw timer, separate phone layout) and period sums that follow the
+  Energy date picker, plus a view theme for the standard energy cards
+- Scriptable widgets that draw a static flow picture; day view vs. momentary view
+  of "where does the power come from"; offline render loop; the one-line-script trap
+- A wallbox that reports "Complete" with the car not full, and a push when sun is
+  available but nothing charges
+
 **Integrations and dashboards**
 - Patching a HACS custom component (e.g. adding a host field to an options
   flow) without breaking entity IDs — and re-applying it after an update
