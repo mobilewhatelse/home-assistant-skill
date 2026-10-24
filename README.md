@@ -82,6 +82,10 @@ A Claude Code skill for developing Home Assistant automations, dashboards, and i
   from real peaks, and a guard that throttles the wallbox and other loads only as
   far as needed (phase-switch pauses, hysteresis, offline simulation)
 - pyscript reloads that leave a control loop running twice, and a single-instance guard
+- Turning such a guard into a custom integration: engine without HA imports and an offline house model,
+  devices by role (wallbox, switch, script), observe mode and lock entity, deciding on averages so cycling
+  cookers do not cause flapping, and the pitfalls on the way (restart for code changes, a selector that
+  fails with a bare HTTP 400, a duplicate `script:` key that silently drops UI scripts)
 
 **Custom energy dashboard and widgets**
 - An animated energy-flow card (button-card v7: style format, automatic entity

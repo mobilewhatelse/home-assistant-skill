@@ -1454,6 +1454,44 @@ Every 20 s: `E` = energy imported so far in this quarter (from the counter),
   (wallbox amps × phases, house base load, a stove switching on). It exposed the
   ramp-up-at-boundary oscillation before any real car was involved.
 
+### From a script to a custom integration (HACS-ready)
+
+When a guard like this should work in other homes, turn the fixed entity ids into configuration:
+
+- **Separate the decisions from Home Assistant.** One module with no `homeassistant` imports takes a snapshot
+  (grid power, counter, per-device readings) and returns actions. It can be unit-tested and run against an
+  offline house model (car, cycling cooker, pool, water heater) in milliseconds; the coordinator only reads
+  states, calls the engine every 20 s and executes the actions.
+- **Devices by role, not by brand:** a wallbox is "power sensor + current `number` (+ optional phase
+  `select`)", a flexible load is "switch (+ power sensor)", anything special (home battery) is "script to
+  intervene + script to undo" — every battery is controlled differently, two small scripts cover all of them.
+  Per device: priority, maximum off time, optional "intervene only while" / "switch on again only while"
+  entities (a template helper can express a schedule or a minimum state of charge).
+- **Observe mode first.** The integration decides and logs "(observed)" but executes nothing, not even a
+  notification. When switching observe → active, forget the observed interventions (they never happened);
+  active → observe/off gives back everything that was really changed. A *lock entity* (e.g. the old guard's
+  switch) refuses active mode while it is on, so two guards never fight.
+- **Decide on averages.** Cookers and kettles cycle within seconds, the bill sees the quarter-hour average.
+  Cut on a 60-second average, give back only on headroom averaged over two minutes *since the last change*,
+  keep a switched-off device off at least five minutes, and give back strictly the most important device
+  first (a less important one gets no headroom while a more important one waits). Without these the
+  simulation flapped the pool pump every 40 seconds.
+- Two strategies are worth offering: *strict priority order* (reproduces a hand-made list) and *least loss of
+  comfort* (cheapest combination of priorities that is enough).
+
+Pitfalls met on the way:
+
+- Python files of a custom integration are loaded once; reloading the config entry does **not** load changed
+  code. Every code change needs a Home Assistant restart.
+- `NumberSelectorConfig(unit_of_measurement=None)` is rejected. In an options flow this surfaces as a bare
+  HTTP 400 when the form is opened, with nothing in the log. Leave the key out instead.
+- Options flows can be driven over REST: `POST /api/config/config_entries/options/flow {"handler": entry_id}`,
+  then `{"next_step_id": "<menu option>"}`, then the form data.
+- UI template helpers can be created the same way: flow handler `template`, `next_step_id: binary_sensor`,
+  then `{"name": ..., "state": "{{ ... }}"}`.
+- Pushing `.github/workflows/*` with a GitHub token without the `workflow` scope is rejected; push without it
+  and add the scope later.
+
 ## Custom Energy Dashboard: button-card, Energy Period Sums, iPhone Widgets
 
 A live energy-flow picture, period sums that follow the Energy date picker, and
@@ -1577,6 +1615,18 @@ YAML last-key-wins — duplicate keys silently override. Always check for accide
   mode: restart
   mode: single    # this wins — restart never applies
 ```
+
+The same at the top level of `configuration.yaml`, and the configuration check still says *valid*:
+
+```yaml
+script: !include scripts.yaml          # what the UI script editor writes to
+...
+script: !include other_scripts.yaml    # wins: every script created in the UI is saved but never loaded
+```
+
+Symptom: a script saved in the UI (or via `/api/config/script/config/<id>`) returns `ok` but no `script.*`
+entity appears. Fix: keep one `script:` key and move the second file into a package
+(`packages: { extra_scripts: { script: !include other_scripts.yaml } }`).
 
 ### Automations without an explicit `id:` spawn duplicate entities
 
