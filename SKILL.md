@@ -1492,6 +1492,113 @@ Pitfalls met on the way:
 - Pushing `.github/workflows/*` with a GitHub token without the `workflow` scope is rejected; push without it
   and add the scope later.
 
+### One entry per device: config subentries (Home Assistant 2026.10)
+
+A guard with many devices outgrows an options flow with a device list. Config **subentries** give every device its
+own row on the integration page (add button per type, ⋮ → reconfigure / delete) and keep the gear icon for the
+general settings:
+
+- The config flow class returns the types from `async_get_supported_subentry_types(cls, config_entry)`, a dict
+  `{"wallbox": WallboxSubentryFlow, ...}`; each type is a `ConfigSubentryFlow` with `async_step_user` (add) and
+  `async_step_reconfigure`.
+- Texts live in `strings.json` (and every `translations/<lang>.json`) under `config_subentries.<type>`:
+  `entry_type` (the label of the row type), `initiate_flow.user` / `initiate_flow.reconfigure` (the button texts),
+  `step.user` / `step.reconfigure` (title, `data`, `description`). Missing texts show the raw key.
+- The row title is the subentry `title`, written once at creation. It keeps the language it was written in
+  (a German title stays German on an English system), so keep titles short and made of values, not sentences.
+- Migrating from an options-based list: raise the flow `VERSION`, implement `async_migrate_entry` that creates one
+  subentry per old device (`hass.config_entries.async_add_subentry`) and removes the old keys from `options`.
+  It ran cleanly on the next restart; keep the old keys readable until the migration has run once.
+- Add an update listener that reloads the entry when subentries change, otherwise a new device only works after a
+  restart.
+
+### Checking a custom integration before it goes public
+
+- **hassfest** in Docker, no GitHub needed:
+  `docker run --rm -v "${PWD}:/github/workspace" ghcr.io/home-assistant/hassfest:latest`
+  (PowerShell; `$(pwd)` in bash). Typical findings: `manifest.json` keys must be sorted (`domain`, `name`, then
+  alphabetical); integrations you only use optionally (for example `energy`, `ai_task`) belong in
+  `after_dependencies`; curly braces in a service `description:` are read as template placeholders, so remove them.
+- **Unit tests** need no Home Assistant when the decision code has no `homeassistant` imports:
+  `python -m unittest discover tests` runs in a fraction of a second and belongs in the CI workflow.
+- **An installation test on a fresh Home Assistant** catches what unit tests cannot: start the official image in
+  Docker with a minimal config, finish onboarding over the API, create a long-lived token, add the integration
+  through the config-flow API, create the devices as subentries, drive the house with helper entities and wait for a
+  quarter-hour boundary before asserting the status and the log.
+- **Render every dashboard template strictly.** Markdown cards are rendered by templates, and an undefined
+  variable only shows up as an empty string in the UI. Send each card's template over the WebSocket as
+  `{"type": "render_template", "template": ..., "strict": true, "timeout": 15}`; a template error then fails the
+  test instead of the user's screen.
+
+### Publishing through HACS and the default list
+
+- **The HACS validation action only runs on a public repository** (a private repo fails with "can only validate
+  public repositories"). It checks description, topics, issues enabled, `hacs.json` and, from Home Assistant
+  2026.3 on, the brand images in `custom_components/<domain>/brand/` (`icon.png` at least). A first run with
+  `ignore: brands` is fine; **the default list requires a run without any `ignore`**, so remove it before applying.
+- **HACS installs the latest release, not the branch.** Keep `manifest.json` `version` equal to the tag, create the
+  release only after hassfest, HACS validation and tests passed, and point the tag at exactly that commit. A draft
+  can be retargeted: `gh release edit <tag> --tag <new-tag> --target main --notes-file notes.md`, published with
+  `gh release edit <tag> --draft=false --latest`.
+- **Workflow files need the `workflow` token scope.** If the terminal is not logged in but the session is, run
+  `gh auth refresh -h github.com -s workflow` where the login exists: it prints a one-time code, you enter it at
+  the device-login page, and the scope appears without a new login.
+- **Licence detection:** GitHub must recognise an OSI-approved licence in `LICENSE` (AGPL-3.0 passes). Explain a
+  dual licence in a separate file (`LICENSING.md`) and keep `LICENSE` the plain text, or detection turns into
+  "NOASSERTION".
+- **Pull request to `hacs/default`:** fork it, branch from `master`, add `owner/repo` to the file `integration`
+  in **case-insensitive alphabetical order** (their `scripts/is_sorted.py` sorts with `str.casefold`), from a
+  personal account (an organisation account is rejected), and fill the template with three links: the release,
+  the HACS action **job** and the hassfest job (job URLs, from `gh run view <id> --json jobs`). Thirteen automated
+  checks pass within a minute; the human review then takes months. Do not request reviewers, that gets the PR
+  closed. Updates later are just new releases, not a new PR.
+- **Line endings:** the list file uses LF. A checkout with `core.autocrlf=true` followed by a script that writes
+  CRLF turns a one-line change into a 4,000-line diff. Read the bytes, keep the newline style and check
+  `git diff --stat` shows one insertion.
+- **Identity in a public repo:** set `user.name` / `user.email` to the account's `<id>+<name>@users.noreply.github.com`
+  address in the clone (repository-local config), not the work address from the global config.
+
+### The sidebar hides panels without a title: the Overview that vanished
+
+The frontend drops every panel that has no `title` from the sidebar unless it is the user's **default panel**. The
+automatic Overview dashboard (`lovelace`) has no title. Setting another dashboard as the default
+(`frontend/set_user_data`, key `core`, `defaultPanel`) therefore removes Overview from the sidebar on all devices,
+although `hiddenPanels` is empty, the panel exists and its URL still works. The fix is a dashboard that has a title:
+
+```json
+{"type": "lovelace/dashboards/create", "url_path": "overview-auto", "title": "Overview",
+ "icon": "mdi:view-dashboard", "show_in_sidebar": true, "require_admin": false, "mode": "storage"}
+{"type": "lovelace/config/save", "url_path": "overview-auto", "config": {"strategy": {"type": "home"}}}
+```
+
+`strategy: home` is the current automatic view (greeting, favourites, summaries, areas); `original-states` is the
+old long list of cards. The `url_path` needs a hyphen.
+
+### Screenshots of a live dashboard for documentation
+
+- **Narrow viewport instead of a big one.** At about 860 px width Home Assistant hides the sidebar, so your other
+  dashboards and your user name stay out of the picture, and the capture is sharper than a 1300 px page scaled
+  down to the screenshot size. Use a phone width (about 390 px) for phone views. Wait ten seconds: the
+  template cards render late and show grey placeholders first.
+- **Look at every image before it goes public.** Tables can hold serial numbers or device ids in a column such as
+  "controls"; crop the column or choose another view. Number inputs show decimals in the browser locale.
+- **Translating the labels for a second-language set** (the integration ships both texts): walk the text nodes
+  through all shadow roots and replace them with the translation file's strings. Three traps: a
+  `MutationObserver` does not see inside shadow roots, so run the pass again right before each capture; charts in
+  markdown cards are `<img src="data:image/svg+xml;utf8,...">`, so decode, rewrite the `<text>` nodes and set the
+  `src` again; and never replace a markdown card's `content` when it also holds a graphic, the graphic goes with it.
+  Replace long generated text (an AI explanation) as a whole paragraph and say on the page that it was translated.
+- **Getting the script into the page:** a script from `http://localhost` is blocked (mixed content / private
+  network). Put it temporarily in the instance's `www/` folder as a `.txt`, `fetch('/local/x.txt')` and `eval` it,
+  then overwrite the file with a stub.
+
+### Remote URL: the error log and failed logins
+
+`/api/error_log` answers 404 through the remote (Nabu Casa) URL; use the WebSocket command `system_log/list`
+instead. For a "login attempt failed" notification read the `homeassistant.components.http.ban` entry: it names the
+requested URL, the user agent and the address. A desktop browser from your own public address on `/api/websocket`
+is usually an old tab with an expired token; compare the address with the companion app's connection lines.
+
 ## Custom Energy Dashboard: button-card, Energy Period Sums, iPhone Widgets
 
 A live energy-flow picture, period sums that follow the Energy date picker, and
@@ -1602,6 +1709,50 @@ delete: overwrite with a stub. Never touch the secrets file or token files.
 - Detect it instead of guessing: charger "Complete", power < 100 W, car below its
   limit, export averaged over 5 minutes above the start threshold, all true for
   20 minutes → push (at most once per few hours).
+
+## A Smart Plug as Router Watchdog (Shelly Gen3 script)
+
+A holiday home's router is switched off on a timer to restart it, and every device behind it drops off twice a week.
+Better: restart it **only after a long internet outage**, with the logic **inside the plug**, because a remote Home
+Assistant cannot reach a device whose internet is down.
+
+**The script** (mJS, runs on the plug, no cloud, no Home Assistant needed):
+
+- Every 30 s `HTTP.GET` two "204" URLs; one answer is enough. Count consecutive failures.
+- After 10 minutes of failures: `Switch.Set {on: false, toggle_after: 20}` plus a timer as second safety.
+- After a restart wait 15 minutes; a second try is allowed after that, from the third on only every 4 hours
+  (a provider outage must not turn into a reboot loop). Reset the counter after 30 minutes of stable internet.
+- On start it writes the plug config itself: `initial_state: on`, `auto_on: true`, `auto_on_delay: 20`. Now
+  switching the plug off from the app (cloud) is a **forced reboot** that always ends powered on.
+
+**Reporting** to the home instance by a webhook through the remote URL (`local_only: false`; the webhook id is the
+secret and belongs only in the automation and the deployed script, never in a public repo):
+
+- `event: router_restart` (push, remember time and reason), `event: heartbeat` every 6 h (silent; a card turns
+  into "has not reported for N hours" after 24 h), `event: outage` after every outage, restarted or not.
+- The outage record: the plug sends the duration (midpoint between the last good and the first failed check, so
+  about half a check interval of error) and "seconds since recovery"; Home Assistant computes the start. Keep the last
+  entries in an `input_text` (255 characters, newest first, oldest dropped), write a logbook line and show count and
+  total of the last seven days on a card. No push for short outages. A two-minute outage is only seen this way.
+
+**Pitfalls**
+
+- **Flash wear.** `KVS.Set` after every check is thousands of writes a day. Write only when the text changes, and
+  make the text coarse (minutes, not seconds) while an outage lasts.
+- **Script memory is limited** (`Script.GetStatus` shows used and peak bytes): keep state in a handful of numbers, never in lists.
+- **Deploy over RPC** without the web editor: `Script.Create`, `Script.PutCode` in chunks of about 800 characters
+  (`append: true` after the first), `Script.SetConfig {enable: true}` (run on startup), `Script.Start`, then read
+  `Script.GetStatus` for `errors` and memory. A device password turns every call into digest authentication: remove
+  it for the deployment and set it again afterwards; do not hand the password to a tool.
+- **Test with the real thing:** switch off the WLAN the plug is on, not just simulated URLs. Expected: the plug
+  restarts the router after about 11 minutes, and the message arrives about a minute after the WLAN is back,
+  because the plug needs internet to report. Also let one long outage run overnight once (about seven hours here): it
+  produced one message and one record.
+- Script and config live in flash; after a power loss the plug starts the script and switches itself on, only the counters begin again.
+- The plug needs the remote site's WLAN. Setting it up at home on a guest WLAN with the same name and password
+  should be enough, it should join the remote one by itself: check that the first heartbeat arrives from there.
+- When the work PC sits in a guest WLAN, the local Home Assistant address is unreachable; use the remote URL
+  (REST and `wss://.../api/websocket`) for the whole job.
 
 ## Common Pitfalls
 
