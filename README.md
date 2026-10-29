@@ -96,6 +96,23 @@ A Claude Code skill for developing Home Assistant automations, dashboards, and i
 - A wallbox that reports "Complete" with the car not full, and a push when sun is
   available but nothing charges
 
+**Publishing a custom integration**
+- Config subentries: one row per device on the integration page, the translation keys, migrating an options list
+- Checks before it goes public: hassfest in Docker, unit tests without Home Assistant, an installation test on a fresh
+  instance, strict rendering of every dashboard template
+- HACS validation and releases, and the pull request to the default list step by step (alphabetical order, line
+  endings, `workflow` scope, repository-local noreply identity)
+
+**A smart plug as router watchdog**
+- A Shelly Gen3 script that restarts a remote router only after a long internet outage, forced reboot from the app,
+  heartbeat and outage log through a webhook, deployment over RPC, flash wear, and testing with the real WLAN off
+
+**Dashboards and documentation**
+- The sidebar hides panels without a title: why the Overview vanishes when another dashboard becomes the default, and
+  the `home` strategy as a fix
+- Screenshots of a live dashboard for documentation: narrow viewport, translating labels through shadow roots and SVG
+  images, privacy review; the remote URL's error-log quirk and triaging a failed-login notification
+
 **Integrations and dashboards**
 - Patching a HACS custom component (e.g. adding a host field to an options
   flow) without breaking entity IDs — and re-applying it after an update
