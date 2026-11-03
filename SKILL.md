@@ -1754,6 +1754,37 @@ secret and belongs only in the automation and the deployed script, never in a pu
 - When the work PC sits in a guest WLAN, the local Home Assistant address is unreachable; use the remote URL
   (REST and `wss://.../api/websocket`) for the whole job.
 
+## An E-Ink Display (TRMNL) as a Home Assistant Dashboard
+
+A low-power e-ink display can show a few numbers from Home Assistant without opening anything towards the internet: HA **pushes** values to a private
+plugin of the display vendor (webhook strategy) and the plugin's markup draws the screen.
+
+- **Webhook plugin.** A private plugin with strategy *Webhook* has its own address (`https://<vendor>/api/custom_plugins/<uuid>`). The UUID is the secret:
+  keep it only in `secrets.yaml`, one line per plugin (`trmnl_webhook_<page>: https://…`), never in the repository or in a screenshot. The vendor needs a
+  developer licence for webhooks; limits were 12 pushes per hour per plugin and 5 KB per push, so send every 5-10 minutes at most.
+- **Send with `rest_command`.** `payload` is a template that returns `{"merge_variables": {...}}`; the plugin markup (Liquid) reads the keys as variables.
+  Several pages (one plugin each) can share one payload with a YAML anchor (`payload: &p >-` … `payload: *p`, the anchor must come first). Per-call values
+  (page, window times) go in as service data and are visible inside the template as plain variables.
+- **Jinja pitfalls in the payload.** Never close nested dict literals with `}}` (the template lexer ends the expression). Build the dict with
+  `{% set daten = {...} %}` and print `{{ daten | tojson }}`. Loops cannot assign outer variables; use `namespace()`. A forecast cannot be read in a
+  template, so call `weather.get_forecasts` in the automation with `response_variable` and pass the list as service data.
+- **Test before sending.** Render the payload with `POST /api/template` (set missing variables in front of it), read the byte size, and compare with the
+  push limit. Send once by hand and look at the plugin's live preview (it shows the data of the last push).
+- **Never break the config.** `rest_command` with `!secret` loads from a YAML file; if the secret line is missing or misspelled, `check_config` reports
+  `Secret … not defined` and the next restart would fail. After every save run `POST /api/config/core/check_config` and **write the old content back at once
+  if the result is not `valid`**. A save through a WebSocket helper can appear to hang, so give the socket a cancellation timeout and read the file back.
+- **The playlist has no time of day.** The vendor playlist offers per-item duration (5, 15, 30, 60 minutes, 2-24 hours) and date range or weekdays, not hours.
+  Let Home Assistant choose the *view* instead: send a variable (`view: morning|weather|energy`) and branch with `{% if %}` in the markup. A morning window is then
+  just a comparison of `HH:MM` strings in the template. Page change in the playlist is a device-side setting; HA cannot change it.
+- **Night.** The device has its own sleep mode (from/to) that saves battery; stopping the pushes at night only saves server load. Keep both times equal and show the
+  device times read-only in HA, so there is one place to change them.
+- **Markup tips (800 x 480, 1-bit).** Use your own CSS grid with 2 px bordered cards; framework value classes get too large. Draw weather icons as inline SVG
+  (`stroke`, `fill` black/white) collected once with `{% capture %}` and chosen with `{% case %}`. Use plain bars (`div` with a width in percent) as gauges. Format
+  numbers with `replace: ".", ","`. A private plugin copy gets its **own** UUID but keeps the markup; changes to the layout have to be pasted into every copy.
+- **Controls as helpers.** Page choice (`input_select`), morning window (`input_boolean` + two `input_datetime`), push interval (`input_select` with 5/10/15/30/60)
+  and a "send now" `input_button`. Create them with `input_*/create` over WebSocket and set values with the services (no `initial`, so values survive restarts).
+  One automation: `time_pattern: /5` with `id: takt` and a condition `now().minute % interval == 0`, `time` triggers at the window edges (`at: input_datetime.…`),
+  state triggers with `for: 5 s` as a debounce, and the button with its own `id`; the condition lets the button pass always.
 ## Common Pitfalls
 
 ### Duplicate YAML keys

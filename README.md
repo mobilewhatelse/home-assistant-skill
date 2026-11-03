@@ -107,6 +107,11 @@ A Claude Code skill for developing Home Assistant automations, dashboards, and i
 - A Shelly Gen3 script that restarts a remote router only after a long internet outage, forced reboot from the app,
   heartbeat and outage log through a webhook, deployment over RPC, flash wear, and testing with the real WLAN off
 
+**An e-ink display as a dashboard**
+- Pushing Home Assistant values to a private webhook plugin (secret per page, rate and size limits), one `rest_command` payload
+  shared by several pages, Jinja pitfalls in the payload, testing with `/api/template`, config check with immediate rollback,
+  choosing the view in Home Assistant because the playlist has no time of day, device sleep mode, weather icons and gauges in markup,
+  helpers and one automation for page, morning window and interval
 **Dashboards and documentation**
 - The sidebar hides panels without a title: why the Overview vanishes when another dashboard becomes the default, and
   the `home` strategy as a fix
