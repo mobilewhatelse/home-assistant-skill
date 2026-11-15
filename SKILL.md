@@ -1529,6 +1529,55 @@ general settings:
   variable only shows up as an empty string in the UI. Send each card's template over the WebSocket as
   `{"type": "render_template", "template": ..., "strict": true, "timeout": 15}`; a template error then fails the
   test instead of the user's screen.
+- **`render_template` is a subscription, not a request.** The first reply is `{"type": "result", "success": true,
+  "result": null}`; the rendered text follows as a separate `{"type": "event", "event": {"result": ...}}` message with
+  the same id (and again whenever a referenced entity changes, until you unsubscribe). A helper that sends a message
+  and reads only the `result` gets `null` every time and looks like a broken template. Read the event, or for a
+  one-off value use REST `POST /api/template` (returns plain text) or filter `get_states` yourself.
+- **Tests must never reach your real backend.** If the integration talks to your own server (feedback, statistics,
+  updates), block it in every test container: `docker run --add-host <your-server>:127.0.0.1 --add-host
+  www.<your-server>:127.0.0.1 ...`. A test run then cannot pollute production data, and a test that silently relied
+  on the real server fails loudly.
+- **Test the update, not only the fresh install.** Users update; few install fresh. Before every release, install
+  each of the last three released versions in a fresh container, set it up (entries, subentries, a few changed
+  settings, a restored state), copy the new version over it, restart, and check: same entities (no duplicates with
+  `_2`), settings and restored values kept, no repairs, no errors in the log. Migration bugs in `async_migrate_entry`
+  and renamed unique ids only show up this way.
+
+### A bug report button in your own integration
+
+Users describe symptoms ("it doesn't charge"); you need state. A button entity that sends an anonymised report
+saves a dozen questions, but only if it really contains what the analysis needs and nothing that identifies anyone.
+
+- **What to collect:** version, Home Assistant version, mode and setup overview; per device the kind, the platform
+  (integration domain), maker, model and firmware of each entity it uses, the current state and allowed range; how
+  many commands were sent, how many failed and how long they took (record that in the service-call wrapper with a
+  done-callback); the last log lines of the integration (a `logging.Handler` subclass with a small `deque`, added in
+  `async_setup_entry` and removed on unload, keeping `record.created`); the last errors.
+- **Names are the trap.** Replacing every device and area name with `<name>` sounds safe, but users call their
+  devices "Wallbox", "Battery" or after the car brand. The replacement then erases the device kind, the integration
+  or the maker, exactly the things the report is for. Collect a keep list (kinds, platforms, makers, models) and drop
+  every name that is contained in one of those words before anonymising. Do include names from connected systems
+  (for example evcc loadpoint titles), not just Home Assistant's own.
+- **Remove clock times, keep relative times.** A wall-clock time ("charged at 22:40", "button pressed 06:55")
+  reveals daily habits. Write "pressed 3 h ago", "set 2 d ago", log lines as "8 min ago", and replace remaining ISO
+  timestamps and `HH:MM` in free text with placeholders. The analysis needs order and distance in time, rarely the
+  clock.
+- **Also anonymise:** URLs, e-mail addresses, IP addresses, long ids and tokens, entity ids (keep only the domain).
+  Run the anonymiser over the finished report once more, because names hide in error texts and log lines.
+- **Keep it flat and small** if your server limits nesting or size: per device single values instead of nested
+  objects, a byte cap with the oldest log lines dropped first. Show the user what was sent (a persistent notification
+  with the readable report) and mention the button in your privacy notice before shipping it.
+- **Test the anonymiser with real reports.** Synthetic tests pass; the first real report showed both the
+  over-anonymisation of generic names and a name leaking from a connected system.
+
+### "Once per week" state that survives a restart
+
+For a rule like "charge to 100 % once a week", store the ISO week (`f"{y}-W{w:02d}"` from `date.isocalendar()`) in
+which it was done as an extra state attribute of a `RestoreEntity` (for example the switch that enables the rule),
+and read it back in `async_added_to_hass`. "Done this week" is then `done_week == week_key(today)`: no own storage
+file, no timer to reset on Monday, and it survives restarts and updates. Apply the raised target everywhere the plan
+is used (own scheduler, external planners such as evcc, look-ahead), not only in the main calculation.
 
 ### Publishing through HACS and the default list
 
