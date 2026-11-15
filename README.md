@@ -99,7 +99,11 @@ A Claude Code skill for developing Home Assistant automations, dashboards, and i
 **Publishing a custom integration**
 - Config subentries: one row per device on the integration page, the translation keys, migrating an options list
 - Checks before it goes public: hassfest in Docker, unit tests without Home Assistant, an installation test on a fresh
-  instance, strict rendering of every dashboard template
+  instance, strict rendering of every dashboard template, `render_template` as a subscription, the real backend blocked
+  in every test container, an update test from the last three released versions
+- A bug report button: what to collect, generic device names that erase the device kind, relative instead of clock
+  times, a flat and small report, testing the anonymiser with real reports
+- "Once per week" state that survives a restart, stored as the ISO week in a `RestoreEntity` attribute
 - HACS validation and releases, and the pull request to the default list step by step (alphabetical order, line
   endings, `workflow` scope, repository-local noreply identity)
 
